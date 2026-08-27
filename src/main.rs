@@ -671,7 +671,9 @@ fn build_ui(app: &Application) {
     let move_btn = Button::with_label("Move");
     let paste_btn = Button::with_label("Paste");
     let trash_btn = Button::with_label("Trash");
+    let open_trash_btn = Button::with_label("Open Trash");
     let hidden_toggle = CheckButton::with_label("Hidden");
+
 
     toolbar2.append(&new_folder_btn);
     toolbar2.append(&new_file_btn);
@@ -680,7 +682,9 @@ fn build_ui(app: &Application) {
     toolbar2.append(&move_btn);
     toolbar2.append(&paste_btn);
     toolbar2.append(&trash_btn);
+    toolbar2.append(&open_trash_btn);
     toolbar2.append(&hidden_toggle);
+
 
     let sidebar_list = ListBox::new();
     sidebar_list.set_selection_mode(SelectionMode::Single);
@@ -1409,6 +1413,49 @@ fn build_ui(app: &Application) {
         });
 
     }
+
+
+    {
+        let window = window.clone();
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        open_trash_btn.connect_clicked(move |_| {
+            let refresh_main: Rc<dyn Fn()> = Rc::new({
+                let notebook = notebook.clone();
+                let ctx = ctx.clone();
+                let location_entry = location_entry.clone();
+                let search_entry = search_entry.clone();
+                let hidden_toggle = hidden_toggle.clone();
+                let sidebar_list = sidebar_list.clone();
+                let watcher_manager = watcher_manager.clone();
+
+                move || {
+                    if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                        refresh_tab(
+                            &tab_state,
+                            &store,
+                            &ctx,
+                            &location_entry,
+                            &search_entry,
+                            &hidden_toggle,
+                            &sidebar_list,
+                        );
+
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                }
+            });
+
+            ui::trash_view::show(&window, refresh_main);
+        });
+    }
+
 
     {
         let notebook = notebook.clone();
