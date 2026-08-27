@@ -95,7 +95,7 @@ fn build_ui(app: &Application) {
     sidebar_scrolled.set_vexpand(true);
 
     let list = ListBox::new();
-    list.set_selection_mode(SelectionMode::Single);
+    list.set_selection_mode(SelectionMode::Multiple);
 
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -158,15 +158,18 @@ fn build_ui(app: &Application) {
                 let index = row.index();
 
                 if index >= 0 {
-                    list.select_row(&row);
+                    if !row.is_selected() {
+                        list.unselect_all();
+                        list.select_row(&row);
+                    }
 
-                    let item = {
+                    let items = {
                         let s = state.borrow();
-                        s.items.get(index as usize).cloned()
+                        file_view::selected_items(&list, &s.items)
                     };
 
-                    if let Some(item) = item {
-                        show_context_menu(&window, &state, &list, &location, &status, item, x, y);
+                    if !items.is_empty() {
+                        show_context_menu(&window, &state, &list, &location, &status, items, x, y);
                     }
                 }
             }
@@ -363,14 +366,15 @@ fn build_ui(app: &Application) {
         rename_btn.connect_clicked(move |_| {
             let selected = {
                 let s = state.borrow();
-                file_view::selected_item(&list, &s.items)
+                file_view::selected_items(&list, &s.items)
             };
 
-            let Some(item) = selected else {
-                status.set_label("Select a file or folder to rename.");
+            if selected.len() != 1 {
+                status.set_label("Select exactly one file or folder to rename.");
                 return;
-            };
+            }
 
+            let item = selected[0].clone();
             let source = item.path.clone();
             let initial_name = item.name.clone();
 
@@ -404,18 +408,22 @@ fn build_ui(app: &Application) {
         copy_btn.connect_clicked(move |_| {
             let selected = {
                 let s = state.borrow();
-                file_view::selected_item(&list, &s.items)
+                file_view::selected_items(&list, &s.items)
             };
 
-            if let Some(item) = selected {
-                state.borrow_mut().pending = Some((PendingOp::Copy, item.path.clone()));
-                status.set_label(&format!(
-                    "Copied “{}”. Navigate to destination and press Paste.",
-                    item.name
-                ));
-            } else {
-                status.set_label("Select a file or folder to copy.");
+            if selected.is_empty() {
+                status.set_label("Select one or more files or folders to copy.");
+                return;
             }
+
+            let paths: Vec<PathBuf> = selected.iter().map(|item| item.path.clone()).collect();
+            let count = paths.len();
+
+            state.borrow_mut().pending = Some((PendingOp::Copy, paths));
+
+            status.set_label(&format!(
+                "Copied {count} item(s). Navigate to destination and press Paste."
+            ));
         });
     }
 
@@ -427,18 +435,22 @@ fn build_ui(app: &Application) {
         move_btn.connect_clicked(move |_| {
             let selected = {
                 let s = state.borrow();
-                file_view::selected_item(&list, &s.items)
+                file_view::selected_items(&list, &s.items)
             };
 
-            if let Some(item) = selected {
-                state.borrow_mut().pending = Some((PendingOp::Move, item.path.clone()));
-                status.set_label(&format!(
-                    "Marked “{}” for move. Navigate to destination and press Paste.",
-                    item.name
-                ));
-            } else {
-                status.set_label("Select a file or folder to move.");
+            if selected.is_empty() {
+                status.set_label("Select one or more files or folders to move.");
+                return;
             }
+
+            let paths: Vec<PathBuf> = selected.iter().map(|item| item.path.clone()).collect();
+            let count = paths.len();
+
+            state.borrow_mut().pending = Some((PendingOp::Move, paths));
+
+            status.set_label(&format!(
+                "Marked {count} item(s) for move. Navigate to destination and press Paste."
+            ));
         });
     }
 
@@ -452,22 +464,20 @@ fn build_ui(app: &Application) {
         paste_btn.connect_clicked(move |_| {
             let pending = state.borrow_mut().pending.take();
 
-            let Some((operation, source)) = pending else {
-                status.set_label("Nothing to paste. Copy or move an item first.");
+            let Some((operation, sources)) = pending else {
+                status.set_label("Nothing to paste. Copy or move items first.");
                 return;
             };
 
             let destination_dir = state.borrow().current.clone();
-            let file_name = source.file_name().unwrap_or_default().to_os_string();
-            let destination = operations::unique_destination(&destination_dir.join(file_name));
 
-            let result = match operation {
-                PendingOp::Copy => operations::copy::copy_path(&source, &destination),
-                PendingOp::Move => operations::move_op::move_path(&source, &destination),
-            };
-
-            if let Err(err) = result {
-                dialogs::show_error(&window_error, &format!("Paste failed: {err}"));
+            match operations::paste_pending(&destination_dir, operation, &sources) {
+                Ok(count) => {
+                    status.set_label(&format!("Pasted {count} item(s)."));
+                }
+                Err(err) => {
+                    dialogs::show_error(&window_error, &format!("Paste failed: {err}"));
+                }
             }
 
             refresh(&state, &list, &location, &status);
@@ -484,26 +494,43 @@ fn build_ui(app: &Application) {
         trash_btn.connect_clicked(move |_| {
             let selected = {
                 let s = state.borrow();
-                file_view::selected_item(&list, &s.items)
+                file_view::selected_items(&list, &s.items)
             };
 
-            if let Some(item) = selected {
+            if selected.is_empty() {
+                status.set_label("Select one or more files or folders to move to trash.");
+                return;
+            }
+
+            let mut succeeded = 0;
+            let mut failed = 0;
+            let mut last_error = None;
+
+            for item in &selected {
                 match operations::trash::delete(&item.path) {
                     Ok(_) => {
-                        status.set_label(&format!("Moved “{}” to trash.", item.name));
+                        succeeded += 1;
                     }
                     Err(err) => {
-                        dialogs::show_error(
-                            &window_error,
-                            &format!("Could not move to trash: {err}"),
-                        );
+                        failed += 1;
+                        last_error = Some(err);
                     }
                 }
-
-                refresh(&state, &list, &location, &status);
-            } else {
-                status.set_label("Select a file or folder to move to trash.");
             }
+
+            if failed == 0 {
+                status.set_label(&format!("Moved {succeeded} item(s) to trash."));
+            } else if succeeded == 0 {
+                if let Some(err) = last_error {
+                    dialogs::show_error(&window_error, &format!("Could not move to trash: {err}"));
+                }
+            } else {
+                status.set_label(&format!(
+                    "Moved {succeeded} item(s) to trash. {failed} failed."
+                ));
+            }
+
+            refresh(&state, &list, &location, &status);
         });
     }
 
@@ -573,10 +600,17 @@ fn show_context_menu(
     list: &ListBox,
     location: &Entry,
     status: &Label,
-    item: directory::Item,
+    items: Vec<directory::Item>,
     x: f64,
     y: f64,
 ) {
+    if items.is_empty() {
+        return;
+    }
+
+    let count = items.len();
+    let single_item = items.first().cloned();
+
     let popover = gtk::Popover::new();
     popover.set_has_arrow(true);
     popover.set_autohide(true);
@@ -597,6 +631,10 @@ fn show_context_menu(
     let trash_btn = Button::with_label("Trash");
     let properties_btn = Button::with_label("Properties");
 
+    open_btn.set_sensitive(count == 1);
+    rename_btn.set_sensitive(count == 1);
+    properties_btn.set_sensitive(count == 1);
+
     menu_box.append(&open_btn);
     menu_box.append(&copy_btn);
     menu_box.append(&move_btn);
@@ -612,10 +650,14 @@ fn show_context_menu(
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
-        let item = item.clone();
+        let item = single_item.clone();
 
         open_btn.connect_clicked(move |_| {
             popover.popdown();
+
+            let Some(item) = item.clone() else {
+                return;
+            };
 
             if item.is_dir {
                 navigate_to(&state, &list, &location, &status, item.path.clone());
@@ -629,15 +671,17 @@ fn show_context_menu(
         let popover = popover.clone();
         let state = state.clone();
         let status = status.clone();
-        let item = item.clone();
+
+        let paths: Vec<PathBuf> = items.iter().map(|item| item.path.clone()).collect();
+        let count = paths.len();
 
         copy_btn.connect_clicked(move |_| {
             popover.popdown();
 
-            state.borrow_mut().pending = Some((PendingOp::Copy, item.path.clone()));
+            state.borrow_mut().pending = Some((PendingOp::Copy, paths.clone()));
+
             status.set_label(&format!(
-                "Copied “{}”. Navigate to destination and press Paste.",
-                item.name
+                "Copied {count} item(s). Navigate to destination and press Paste."
             ));
         });
     }
@@ -646,15 +690,17 @@ fn show_context_menu(
         let popover = popover.clone();
         let state = state.clone();
         let status = status.clone();
-        let item = item.clone();
+
+        let paths: Vec<PathBuf> = items.iter().map(|item| item.path.clone()).collect();
+        let count = paths.len();
 
         move_btn.connect_clicked(move |_| {
             popover.popdown();
 
-            state.borrow_mut().pending = Some((PendingOp::Move, item.path.clone()));
+            state.borrow_mut().pending = Some((PendingOp::Move, paths.clone()));
+
             status.set_label(&format!(
-                "Marked “{}” for move. Navigate to destination and press Paste.",
-                item.name
+                "Marked {count} item(s) for move. Navigate to destination and press Paste."
             ));
         });
     }
@@ -666,12 +712,17 @@ fn show_context_menu(
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
-
-        let source = item.path.clone();
-        let initial_name = item.name.clone();
+        let single_item = single_item.clone();
 
         rename_btn.connect_clicked(move |_| {
             popover.popdown();
+
+            let Some(item) = single_item.clone() else {
+                return;
+            };
+
+            let source = item.path.clone();
+            let initial_name = item.name.clone();
 
             dialogs::show_text_dialog(&window, "Rename", &initial_name, "Rename", {
                 let window = window.clone();
@@ -702,18 +753,39 @@ fn show_context_menu(
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
-        let item = item.clone();
+
+        let paths: Vec<PathBuf> = items.iter().map(|item| item.path.clone()).collect();
+        let count = paths.len();
 
         trash_btn.connect_clicked(move |_| {
             popover.popdown();
 
-            match operations::trash::delete(&item.path) {
-                Ok(_) => {
-                    status.set_label(&format!("Moved “{}” to trash.", item.name));
+            let mut succeeded = 0;
+            let mut failed = 0;
+            let mut last_error = None;
+
+            for path in &paths {
+                match operations::trash::delete(path) {
+                    Ok(_) => {
+                        succeeded += 1;
+                    }
+                    Err(err) => {
+                        failed += 1;
+                        last_error = Some(err);
+                    }
                 }
-                Err(err) => {
+            }
+
+            if failed == 0 {
+                status.set_label(&format!("Moved {succeeded} item(s) to trash."));
+            } else if succeeded == 0 {
+                if let Some(err) = last_error {
                     dialogs::show_error(&window, &format!("Could not move to trash: {err}"));
                 }
+            } else {
+                status.set_label(&format!(
+                    "Moved {succeeded} item(s) to trash. {failed} of {count} failed."
+                ));
             }
 
             refresh(&state, &list, &location, &status);
@@ -723,10 +795,14 @@ fn show_context_menu(
     {
         let popover = popover.clone();
         let window = window.clone();
-        let item = item.clone();
+        let item = single_item.clone();
 
         properties_btn.connect_clicked(move |_| {
             popover.popdown();
+
+            let Some(item) = item.clone() else {
+                return;
+            };
 
             let size = if item.is_dir {
                 "-".to_string()
