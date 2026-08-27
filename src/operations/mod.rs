@@ -4,12 +4,35 @@ pub mod move_op;
 pub mod rename;
 pub mod trash;
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy)]
 pub enum PendingOp {
     Copy,
     Move,
+}
+
+pub fn paste_pending(
+    destination_dir: &Path,
+    operation: PendingOp,
+    sources: &[PathBuf],
+) -> io::Result<usize> {
+    let mut pasted = 0;
+
+    for source in sources {
+        let file_name = source.file_name().unwrap_or_default().to_os_string();
+        let destination = unique_destination(&destination_dir.join(file_name));
+
+        match operation {
+            PendingOp::Copy => copy::copy_path(source, &destination)?,
+            PendingOp::Move => move_op::move_path(source, &destination)?,
+        }
+
+        pasted += 1;
+    }
+
+    Ok(pasted)
 }
 
 pub fn unique_destination(destination: &Path) -> PathBuf {
