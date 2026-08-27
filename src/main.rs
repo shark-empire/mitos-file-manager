@@ -24,6 +24,7 @@ use std::rc::Rc;
 use app::context::AppContext;
 use app::state::TabState;
 use filesystem::directory;
+use filesystem::metadata;
 use navigation::bookmarks;
 use navigation::locations;
 use operations::PendingOp;
@@ -87,12 +88,16 @@ fn refresh_tab(
     let mut s = tab_state.borrow_mut();
     let current = s.current.clone();
 
-    if location_entry.text().as_str() != current.display().to_string() {
+    if let Some(crumbs) = location_entry.data::<GtkBox>("path-crumbs") {
+        ui::path_bar::update(&crumbs, location_entry, &current);
+    } else if location_entry.text().as_str() != current.display().to_string() {
         location_entry.set_text(&current.display().to_string());
     }
+
     if search_entry.text().as_str() != s.search_query {
         search_entry.set_text(&s.search_query);
     }
+
     if hidden_toggle.is_active() != s.show_hidden {
         hidden_toggle.set_active(s.show_hidden);
     }
@@ -110,11 +115,25 @@ fn refresh_tab(
         _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
+    let item_count = items.len();
+
     grid_view::render(store, &items);
     s.items = items;
 
     sidebar::build(sidebar_list, &ctx.borrow().bookmarks);
+
+    if let Some(status_label) = location_entry.data::<Label>("status-label") {
+        let free = filesystem_free_string(&current);
+
+        status_label.set_label(&format!(
+            "{} · {} items · {} free",
+            current.display(),
+            item_count,
+            free
+        ));
+    }
 }
+
 
 fn add_tab(
     notebook: &Notebook,
@@ -145,6 +164,36 @@ fn add_tab(
     page_widget.set_data("grid-view", grid.clone());
     page_widget.set_data("list-store", store.clone());
     page_widget.set_data("selection-model", selection.clone());
+
+        // Update selection status bar
+    {
+        let selection_label = location_entry
+            .data::<Label>("selection-label")
+            .map(|label| label.clone());
+
+        let store_for_selection = store.clone();
+
+        selection.connect_selection_changed(move |selection| {
+            let Some(selection_label) = selection_label.clone() else {
+                return;
+            };
+
+            let selected = grid_view::selected_items(selection, &store_for_selection);
+
+            if selected.is_empty() {
+                selection_label.set_label("");
+            } else {
+                let total: u64 = selected.iter().map(|item| item.size()).sum();
+
+                selection_label.set_label(&format!(
+                    "{} selected · {}",
+                    selected.len(),
+                    metadata::format_size(total)
+                ));
+            }
+        });
+    }
+
 
     let tab_label = GtkBox::new(Orientation::Horizontal, 4);
     let label_text = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string_lossy().to_string());
@@ -326,9 +375,10 @@ fn build_ui(app: &Application) {
     let home_btn = Button::with_label("Home");
     let bookmark_btn = Button::with_label("Bookmark");
     
-    let location_entry = Entry::new();
+    let (location_bar, location_stack, path_crumbs, location_entry) = ui::path_bar::build();
     location_entry.set_placeholder_text(Some("/path/to/directory"));
     location_entry.set_hexpand(true);
+
     
     let search_entry = SearchEntry::new();
     search_entry.set_placeholder_text(Some("Search..."));
@@ -339,7 +389,7 @@ fn build_ui(app: &Application) {
     toolbar1.append(&up_btn);
     toolbar1.append(&home_btn);
     toolbar1.append(&bookmark_btn);
-    toolbar1.append(&location_entry);
+    toolbar1.append(&location_bar);
     toolbar1.append(&search_entry);
 
     let toolbar2 = GtkBox::new(Orientation::Horizontal, 6);
@@ -382,11 +432,31 @@ fn build_ui(app: &Application) {
     content.append(&notebook);
     content.set_vexpand(true);
 
+    let status_bar = GtkBox::new(Orientation::Horizontal, 6);
+
+    let status_label = Label::new(Some("Ready"));
+    status_label.set_halign(gtk::Align::Start);
+    status_label.set_hexpand(true);
+
+    let selection_label = Label::new(Some(""));
+    selection_label.set_halign(gtk::Align::End);
+
+    status_bar.append(&status_label);
+    status_bar.append(&selection_label);
+
     root.append(&toolbar1);
     root.append(&toolbar2);
     root.append(&content);
+    root.append(&status_bar);
+
+    // Attach useful widgets to the location entry so helper functions can access them.
+    location_entry.set_data("path-crumbs", path_crumbs.clone());
+    location_entry.set_data("location-stack", location_stack.clone());
+    location_entry.set_data("status-label", status_label.clone());
+    location_entry.set_data("selection-label", selection_label.clone());
 
     window.set_child(Some(&root));
+
 
     add_tab(&notebook, &ctx, locations::home_dir(), &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list, &watcher_manager);
 
@@ -420,14 +490,28 @@ fn build_ui(app: &Application) {
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
+        let location_stack = location_stack.clone();
+        let location_entry = location_entry.clone();
+
 
         key_controller.connect_key_pressed(move |_, key, _, modifier| {
+            let ctrl = modifier.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+
+            if ctrl && key == gtk::gdk::Key::l {
+                location_stack.set_visible_child_name("entry");
+                location_entry.grab_focus();
+                return glib::Propagation::Stop;
+            }
+
             // Ignore shortcuts if typing in an Entry
             if let Some(focus) = window.focus() {
-                if focus.downcast_ref::<gtk::Entry>().is_some() || focus.downcast_ref::<gtk::SearchEntry>().is_some() {
+                if focus.downcast_ref::<gtk::Entry>().is_some()
+                    || focus.downcast_ref::<gtk::SearchEntry>().is_some()
+                {
                     return glib::Propagation::Proceed;
                 }
             }
+
 
             let ctrl = modifier.contains(gtk::gdk::ModifierType::CONTROL_MASK);
             let alt = modifier.contains(gtk::gdk::ModifierType::ALT_MASK);
@@ -628,17 +712,31 @@ fn build_ui(app: &Application) {
         let watcher_manager = watcher_manager.clone();
 
         location_entry.connect_activate(move |entry| {
+            if let Some(stack) = entry.data::<gtk::Stack>("location-stack") {
+                stack.set_visible_child_name("crumbs");
+            }
+
             let text = entry.text().to_string();
             let path = PathBuf::from(text);
+
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 if path.is_dir() {
                     navigate_to(&tab_state, path);
-                    refresh_tab(&tab_state, &store, &ctx, &location_entry_clone, &search_entry, &hidden_toggle, &sidebar_list);
+                    refresh_tab(
+                        &tab_state,
+                        &store,
+                        &ctx,
+                        &location_entry_clone,
+                        &search_entry,
+                        &hidden_toggle,
+                        &sidebar_list,
+                    );
                     update_watcher(&notebook, &watcher_manager);
                 }
             }
         });
     }
+
 
     {
         let notebook = notebook.clone();
@@ -1292,3 +1390,20 @@ fn show_sidebar_context_menu(
 
     popover.popup();
 }
+
+fn filesystem_free_string(path: &std::path::Path) -> String {
+    let file = gio::File::for_path(path);
+
+    if let Ok(info) = file.query_filesystem_info(
+        "filesystem::free",
+        gio::FileQueryInfoFlags::NONE,
+        gio::Cancellable::NONE,
+    ) {
+        if let Some(free) = info.attribute_u64("filesystem::free") {
+            return metadata::format_size(free);
+        }
+    }
+
+    "?".to_string()
+}
+
