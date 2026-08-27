@@ -1,4 +1,4 @@
-
+#![allow(dead_code)]
 
 mod app;
 mod error;
@@ -21,9 +21,11 @@ use std::rc::Rc;
 
 use app::state::AppState;
 use filesystem::directory;
+use navigation::locations;
 use operations::PendingOp;
 use ui::dialogs;
 use ui::file_view;
+use ui::sidebar;
 
 fn main() {
     let app = Application::builder()
@@ -38,8 +40,8 @@ fn build_ui(app: &Application) {
     let window = ApplicationWindow::builder()
         .application(app)
         .title("MITOS Files")
-        .default_width(1024)
-        .default_height(700)
+        .default_width(1100)
+        .default_height(720)
         .build();
 
     let root = GtkBox::new(Orientation::Vertical, 6);
@@ -78,6 +80,19 @@ fn build_ui(app: &Application) {
     location.set_placeholder_text(Some("/path/to/directory"));
     location.set_hexpand(true);
 
+    let sidebar_list = ListBox::new();
+    sidebar_list.set_selection_mode(SelectionMode::Single);
+    sidebar::build(&sidebar_list);
+
+    let sidebar_scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .build();
+
+    sidebar_scrolled.set_child(Some(&sidebar_list));
+    sidebar_scrolled.set_width_request(190);
+    sidebar_scrolled.set_vexpand(true);
+
     let list = ListBox::new();
     list.set_selection_mode(SelectionMode::Single);
 
@@ -89,19 +104,43 @@ fn build_ui(app: &Application) {
     scrolled.set_child(Some(&list));
     scrolled.set_vexpand(true);
 
+    let content = GtkBox::new(Orientation::Horizontal, 6);
+    content.append(&sidebar_scrolled);
+    content.append(&scrolled);
+    content.set_vexpand(true);
+
     let status = Label::new(Some("Ready"));
     status.set_halign(gtk::Align::Start);
 
     root.append(&toolbar);
     root.append(&location);
-    root.append(&scrolled);
+    root.append(&content);
     root.append(&status);
 
     window.set_child(Some(&root));
 
-    let state = Rc::new(RefCell::new(AppState::new(home_dir())));
+    let state = Rc::new(RefCell::new(AppState::new(locations::home_dir())));
 
     refresh(&state, &list, &location, &status);
+
+    {
+        let state = state.clone();
+        let list = list.clone();
+        let location = location.clone();
+        let status = status.clone();
+
+        sidebar_list.connect_row_activated(move |_, row| {
+            let index = row.index();
+
+            if index < 0 {
+                return;
+            }
+
+            if let Some(path) = sidebar::place_at(index as usize) {
+                navigate_to(&state, &list, &location, &status, path);
+            }
+        });
+    }
 
     {
         let state = state.clone();
@@ -138,7 +177,7 @@ fn build_ui(app: &Application) {
         let status = status.clone();
 
         home_btn.connect_clicked(move |_| {
-            navigate_to(&state, &list, &location, &status, home_dir());
+            navigate_to(&state, &list, &location, &status, locations::home_dir());
         });
     }
 
@@ -436,12 +475,6 @@ fn build_ui(app: &Application) {
     }
 
     window.present();
-}
-
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn normalize(path: PathBuf) -> PathBuf {
