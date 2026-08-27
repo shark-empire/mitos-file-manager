@@ -3,11 +3,10 @@
 mod app;
 mod error;
 mod filesystem;
+mod mime;
 mod navigation;
 mod operations;
 mod ui;
-mod mime;
-
 
 use gtk::prelude::*;
 use gtk::gio;
@@ -66,10 +65,13 @@ fn navigate_to(tab_state: &Rc<RefCell<TabState>>, requested: PathBuf) {
     }
 }
 
-fn go_back(tab_state: &Rc<RefCell<TabState>>) {
-    let previous = tab_state.borrow_mut().history.pop();
-    if let Some(previous) = previous {
-        tab_state.borrow_mut().current = previous;
+fn update_watcher(
+    notebook: &Notebook,
+    watcher_manager: &Rc<RefCell<filesystem::watcher::WatcherManager>>
+) {
+    if let Some((tab_state, _, _, _)) = get_active_widgets(notebook) {
+        let current = tab_state.borrow().current.clone();
+        watcher_manager.borrow_mut().watch(&current);
     }
 }
 
@@ -123,6 +125,7 @@ fn add_tab(
     search_entry: &SearchEntry,
     hidden_toggle: &CheckButton,
     sidebar_list: &ListBox,
+    watcher_manager: &Rc<RefCell<filesystem::watcher::WatcherManager>>,
 ) {
     let tab_state = Rc::new(RefCell::new(TabState::new(path.clone())));
     let (store, selection) = grid_view::create_model();
@@ -172,6 +175,7 @@ fn add_tab(
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         grid.connect_activate(move |_, pos| {
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
@@ -180,6 +184,7 @@ fn add_tab(
                         if item_obj.is_dir() {
                             navigate_to(&tab_state, item_obj.get_path());
                             refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                            update_watcher(&notebook, &watcher_manager);
                         } else {
                             let _ = Command::new("xdg-open").arg(&item_obj.get_path()).spawn();
                         }
@@ -189,7 +194,7 @@ fn add_tab(
         });
     }
 
-    // 2. Drag Source (Native FileList)
+    // 2. Drag Source
     {
         let selection = selection.clone();
         let store = store.clone();
@@ -214,7 +219,7 @@ fn add_tab(
         grid.add_controller(drag_source);
     }
 
-    // 3. Drop Target (Accepts from Nautilus/Dolphin)
+    // 3. Drop Target
     {
         let window_error = window.clone();
         let tab_state = tab_state.clone();
@@ -224,6 +229,8 @@ fn add_tab(
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+        let notebook = notebook.clone();
 
         let drop_target = gtk::DropTarget::builder()
             .type_(gtk::gdk::FileList::static_type())
@@ -232,11 +239,8 @@ fn add_tab(
 
         drop_target.connect_drop(move |target, value, _x, _y| {
             let Ok(file_list) = value.get::<gtk::gdk::FileList>() else { return false; };
-            
-            // Automatically detects if Ctrl is held for COPY, otherwise MOVE
             let action = target.current_action();
             let is_copy = action == gtk::gdk::DragAction::COPY;
-            
             let files = file_list.files();
             if files.is_empty() { return false; }
             
@@ -246,25 +250,20 @@ fn add_tab(
             for file in &files {
                 if let Some(path) = file.path() {
                     if destination_dir.starts_with(&path) || path == destination_dir { continue; }
-
                     let file_name = path.file_name().unwrap_or_default().to_os_string();
                     let dest = operations::unique_destination(&destination_dir.join(file_name));
-                    
                     let result = if is_copy {
                         operations::copy::copy_path(&path, &dest)
                     } else {
                         operations::move_op::move_path(&path, &dest)
                     };
-                    
                     if let Err(err) = result { last_error = Some(err); }
                 }
             }
             
-            if let Some(err) = last_error {
-                dialogs::show_error(&window_error, &format!("Drop failed: {err}"));
-            }
-            
+            if let Some(err) = last_error { dialogs::show_error(&window_error, &format!("Drop failed: {err}")); }
             refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+            update_watcher(&notebook, &watcher_manager);
             true
         });
         grid.add_controller(drop_target);
@@ -281,6 +280,7 @@ fn add_tab(
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         let right_click = gtk::GestureClick::new();
         right_click.set_button(3);
@@ -288,7 +288,7 @@ fn add_tab(
         right_click.connect_pressed(move |_gesture, _n_press, x, y| {
             let items = grid_view::selected_items(&selection, &store);
             if !items.is_empty() {
-                show_context_menu(&window, &notebook, &ctx, &grid, &store, &selection, &location_entry, &search_entry, &hidden_toggle, &sidebar_list, items, x, y);
+                show_context_menu(&window, &notebook, &ctx, &grid, &store, &selection, &location_entry, &search_entry, &hidden_toggle, &sidebar_list, &watcher_manager, items, x, y);
             }
         });
         grid.add_controller(right_click);
@@ -296,6 +296,7 @@ fn add_tab(
 
     refresh_tab(&tab_state, &store, ctx, location_entry, search_entry, hidden_toggle, sidebar_list);
     notebook.set_current_page(Some(page_index));
+    update_watcher(notebook, watcher_manager);
 }
 
 fn build_ui(app: &Application) {
@@ -314,8 +315,13 @@ fn build_ui(app: &Application) {
 
     let ctx = Rc::new(RefCell::new(AppContext::new()));
 
+    // Setup Inotify Channel
+    let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
+    let watcher_manager = Rc::new(RefCell::new(filesystem::watcher::WatcherManager::new(sender)));
+
     let toolbar1 = GtkBox::new(Orientation::Horizontal, 6);
     let back_btn = Button::with_label("Back");
+    let forward_btn = Button::with_label("Forward");
     let up_btn = Button::with_label("Up");
     let home_btn = Button::with_label("Home");
     let bookmark_btn = Button::with_label("Bookmark");
@@ -329,6 +335,7 @@ fn build_ui(app: &Application) {
     search_entry.set_width_request(200);
 
     toolbar1.append(&back_btn);
+    toolbar1.append(&forward_btn);
     toolbar1.append(&up_btn);
     toolbar1.append(&home_btn);
     toolbar1.append(&bookmark_btn);
@@ -381,7 +388,196 @@ fn build_ui(app: &Application) {
 
     window.set_child(Some(&root));
 
-    add_tab(&notebook, &ctx, locations::home_dir(), &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+    add_tab(&notebook, &ctx, locations::home_dir(), &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list, &watcher_manager);
+
+    // --- Inotify Receiver ---
+    {
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+
+        receiver.attach(None, move |()| {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    // --- Keyboard Shortcuts ---
+    {
+        let key_controller = gtk::EventControllerKey::new();
+        window.add_controller(key_controller.clone());
+
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let window = window.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        key_controller.connect_key_pressed(move |_, key, _, modifier| {
+            // Ignore shortcuts if typing in an Entry
+            if let Some(focus) = window.focus() {
+                if focus.downcast_ref::<gtk::Entry>().is_some() || focus.downcast_ref::<gtk::SearchEntry>().is_some() {
+                    return glib::Propagation::Proceed;
+                }
+            }
+
+            let ctrl = modifier.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            let alt = modifier.contains(gtk::gdk::ModifierType::ALT_MASK);
+            let active = get_active_widgets(&notebook);
+
+            match key {
+                k if ctrl && k == gtk::gdk::Key::c => {
+                    if let Some((_, _, store, selection)) = &active {
+                        let selected = grid_view::selected_items(selection, store);
+                        if !selected.is_empty() {
+                            let paths: Vec<PathBuf> = selected.iter().map(|item| item.get_path()).collect();
+                            ctx.borrow_mut().pending = Some((PendingOp::Copy, paths));
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
+                k if ctrl && k == gtk::gdk::Key::x => {
+                    if let Some((_, _, store, selection)) = &active {
+                        let selected = grid_view::selected_items(selection, store);
+                        if !selected.is_empty() {
+                            let paths: Vec<PathBuf> = selected.iter().map(|item| item.get_path()).collect();
+                            ctx.borrow_mut().pending = Some((PendingOp::Move, paths));
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
+                k if ctrl && k == gtk::gdk::Key::v => {
+                    let pending = ctx.borrow_mut().pending.take();
+                    if let Some((operation, sources)) = pending {
+                        if let Some((tab_state, _, store, _)) = &active {
+                            let destination_dir = tab_state.borrow().current.clone();
+                            if let Err(err) = operations::paste_pending(&destination_dir, operation, &sources) {
+                                dialogs::show_error(&window, &format!("Paste failed: {err}"));
+                            }
+                            refresh_tab(tab_state, store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                            update_watcher(&notebook, &watcher_manager);
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
+                k if ctrl && k == gtk::gdk::Key::t => {
+                    if let Some((tab_state, _, _, _)) = &active {
+                        let current = tab_state.borrow().current.clone();
+                        add_tab(&notebook, &ctx, current, &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list, &watcher_manager);
+                    }
+                    return glib::Propagation::Stop;
+                }
+                k if ctrl && k == gtk::gdk::Key::w => {
+                    if let Some(page_num) = notebook.current_page() {
+                        notebook.remove_page(page_num);
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                    return glib::Propagation::Stop;
+                }
+                k if ctrl && k == gtk::gdk::Key::h => {
+                    if let Some((tab_state, _, store, _)) = &active {
+                        let mut s = tab_state.borrow_mut();
+                        s.show_hidden = !s.show_hidden;
+                        drop(s);
+                        refresh_tab(tab_state, store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                    return glib::Propagation::Stop;
+                }
+                k if alt && k == gtk::gdk::Key::Left => {
+                    if let Some((tab_state, _, store, _)) = &active {
+                        let current = tab_state.borrow().current.clone();
+                        let previous = tab_state.borrow_mut().history.go_back(&current);
+                        if let Some(prev) = previous {
+                            tab_state.borrow_mut().current = prev;
+                            refresh_tab(tab_state, store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                            update_watcher(&notebook, &watcher_manager);
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
+                k if alt && k == gtk::gdk::Key::Right => {
+                    if let Some((tab_state, _, store, _)) = &active {
+                        let current = tab_state.borrow().current.clone();
+                        let next = tab_state.borrow_mut().history.go_forward(&current);
+                        if let Some(n) = next {
+                            tab_state.borrow_mut().current = n;
+                            refresh_tab(tab_state, store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                            update_watcher(&notebook, &watcher_manager);
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
+                k if key == gtk::gdk::Key::Delete => {
+                    if let Some((tab_state, _, store, selection)) = &active {
+                        let selected = grid_view::selected_items(selection, store);
+                        if !selected.is_empty() {
+                            let mut last_error = None;
+                            for item in &selected {
+                                if let Err(err) = operations::trash::delete(&item.get_path()) {
+                                    last_error = Some(err);
+                                }
+                            }
+                            if let Some(err) = last_error {
+                                dialogs::show_error(&window, &format!("Could not move to trash: {err}"));
+                            }
+                            refresh_tab(tab_state, store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                            update_watcher(&notebook, &watcher_manager);
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
+                k if key == gtk::gdk::Key::F2 => {
+                    if let Some((tab_state, _, store, selection)) = &active {
+                        let selected = grid_view::selected_items(selection, store);
+                        if selected.len() == 1 {
+                            let item = selected[0].clone();
+                            let source = item.get_path();
+                            let initial_name = item.name();
+                            let window_clone = window.clone();
+                            let notebook_clone = notebook.clone();
+                            let ctx_clone = ctx.clone();
+                            let location_entry_clone = location_entry.clone();
+                            let search_entry_clone = search_entry.clone();
+                            let hidden_toggle_clone = hidden_toggle.clone();
+                            let sidebar_list_clone = sidebar_list.clone();
+                            let watcher_manager_clone = watcher_manager.clone();
+                            
+                            dialogs::show_text_dialog(&window_clone, "Rename", &initial_name, "Rename", move |name| {
+                                if name.is_empty() { return; }
+                                if let Err(err) = operations::rename::rename_path(&source, &name) {
+                                    dialogs::show_error(&window_clone, &format!("Could not rename: {err}"));
+                                }
+                                if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook_clone) {
+                                    refresh_tab(&tab_state, &store, &ctx_clone, &location_entry_clone, &search_entry_clone, &hidden_toggle_clone, &sidebar_list_clone);
+                                    update_watcher(&notebook_clone, &watcher_manager_clone);
+                                }
+                            });
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
+                k if key == gtk::gdk::Key::F5 => {
+                    if let Some((tab_state, _, store, _)) = &active {
+                        refresh_tab(tab_state, store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
+            }
+
+            glib::Propagation::Proceed
+        });
+    }
 
     // --- Global Signals ---
 
@@ -391,10 +587,12 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         notebook.connect_switch_page(move |nb, _, _| {
             if let Some((tab_state, _, store, _)) = get_active_widgets(nb) {
                 refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                update_watcher(nb, &watcher_manager);
             }
         });
     }
@@ -406,6 +604,7 @@ fn build_ui(app: &Application) {
         let search_entry_clone = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         search_entry.connect_search_changed(move |entry| {
             let query = entry.text().to_string();
@@ -413,6 +612,7 @@ fn build_ui(app: &Application) {
                 if tab_state.borrow().search_query != query {
                     tab_state.borrow_mut().search_query = query;
                     refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry_clone, &hidden_toggle, &sidebar_list);
+                    update_watcher(&notebook, &watcher_manager);
                 }
             }
         });
@@ -425,6 +625,7 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         location_entry.connect_activate(move |entry| {
             let text = entry.text().to_string();
@@ -433,6 +634,7 @@ fn build_ui(app: &Application) {
                 if path.is_dir() {
                     navigate_to(&tab_state, path);
                     refresh_tab(&tab_state, &store, &ctx, &location_entry_clone, &search_entry, &hidden_toggle, &sidebar_list);
+                    update_watcher(&notebook, &watcher_manager);
                 }
             }
         });
@@ -445,12 +647,14 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         sidebar_list.connect_row_activated(move |_, row| {
             if let Some(path) = sidebar::resolve_click(row) {
                 if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                     navigate_to(&tab_state, path);
                     refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                    update_watcher(&notebook, &watcher_manager);
                 }
             }
         });
@@ -489,29 +693,16 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         back_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                go_back(&tab_state);
-                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
-            }
-        });
-    }
-
-    {
-        let notebook = notebook.clone();
-        let ctx = ctx.clone();
-        let location_entry = location_entry.clone();
-        let search_entry = search_entry.clone();
-        let hidden_toggle = hidden_toggle.clone();
-        let sidebar_list = sidebar_list.clone();
-
-        up_btn.connect_clicked(move |_| {
-            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 let current = tab_state.borrow().current.clone();
-                if let Some(parent) = current.parent() {
-                    navigate_to(&tab_state, parent.to_path_buf());
+                let previous = tab_state.borrow_mut().history.go_back(&current);
+                if let Some(prev) = previous {
+                    tab_state.borrow_mut().current = prev;
                     refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                    update_watcher(&notebook, &watcher_manager);
                 }
             }
         });
@@ -524,11 +715,17 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
-        home_btn.connect_clicked(move |_| {
+        forward_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                navigate_to(&tab_state, locations::home_dir());
-                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                let current = tab_state.borrow().current.clone();
+                let next = tab_state.borrow_mut().history.go_forward(&current);
+                if let Some(n) = next {
+                    tab_state.borrow_mut().current = n;
+                    refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                    update_watcher(&notebook, &watcher_manager);
+                }
             }
         });
     }
@@ -540,6 +737,46 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        up_btn.connect_clicked(move |_| {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                let current = tab_state.borrow().current.clone();
+                if let Some(parent) = current.parent() {
+                    navigate_to(&tab_state, parent.to_path_buf());
+                    refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                    update_watcher(&notebook, &watcher_manager);
+                }
+            }
+        });
+    }
+
+    {
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        home_btn.connect_clicked(move |_| {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                navigate_to(&tab_state, locations::home_dir());
+                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                update_watcher(&notebook, &watcher_manager);
+            }
+        });
+    }
+
+    {
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         hidden_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
@@ -547,6 +784,7 @@ fn build_ui(app: &Application) {
                 if tab_state.borrow().show_hidden != is_active {
                     tab_state.borrow_mut().show_hidden = is_active;
                     refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                    update_watcher(&notebook, &watcher_manager);
                 }
             }
         });
@@ -560,6 +798,7 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         new_folder_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
@@ -572,6 +811,8 @@ fn build_ui(app: &Application) {
                     let search_entry = search_entry.clone();
                     let hidden_toggle = hidden_toggle.clone();
                     let sidebar_list = sidebar_list.clone();
+                    let watcher_manager = watcher_manager.clone();
+                    let notebook = notebook.clone();
 
                     move |name| {
                         if name.is_empty() { return; }
@@ -580,6 +821,7 @@ fn build_ui(app: &Application) {
                             dialogs::show_error(&window_error, &format!("Could not create folder: {err}"));
                         }
                         refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                        update_watcher(&notebook, &watcher_manager);
                     }
                 });
             }
@@ -594,6 +836,7 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         new_file_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
@@ -606,6 +849,8 @@ fn build_ui(app: &Application) {
                     let search_entry = search_entry.clone();
                     let hidden_toggle = hidden_toggle.clone();
                     let sidebar_list = sidebar_list.clone();
+                    let watcher_manager = watcher_manager.clone();
+                    let notebook = notebook.clone();
 
                     move |name| {
                         if name.is_empty() { return; }
@@ -614,6 +859,7 @@ fn build_ui(app: &Application) {
                             dialogs::show_error(&window_error, &format!("Could not create file: {err}"));
                         }
                         refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                        update_watcher(&notebook, &watcher_manager);
                     }
                 });
             }
@@ -628,6 +874,7 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         rename_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, store, selection)) = get_active_widgets(&notebook) {
@@ -647,6 +894,8 @@ fn build_ui(app: &Application) {
                     let search_entry = search_entry.clone();
                     let hidden_toggle = hidden_toggle.clone();
                     let sidebar_list = sidebar_list.clone();
+                    let watcher_manager = watcher_manager.clone();
+                    let notebook = notebook.clone();
 
                     move |name| {
                         if name.is_empty() { return; }
@@ -654,6 +903,7 @@ fn build_ui(app: &Application) {
                             dialogs::show_error(&window_error, &format!("Could not rename: {err}"));
                         }
                         refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                        update_watcher(&notebook, &watcher_manager);
                     }
                 });
             }
@@ -696,6 +946,7 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         paste_btn.connect_clicked(move |_| {
             let pending = ctx.borrow_mut().pending.take();
@@ -707,6 +958,7 @@ fn build_ui(app: &Application) {
                     dialogs::show_error(&window_error, &format!("Paste failed: {err}"));
                 }
                 refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                update_watcher(&notebook, &watcher_manager);
             }
         });
     }
@@ -719,6 +971,7 @@ fn build_ui(app: &Application) {
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         trash_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, store, selection)) = get_active_widgets(&notebook) {
@@ -735,6 +988,7 @@ fn build_ui(app: &Application) {
                     dialogs::show_error(&window_error, &format!("Could not move to trash: {err}"));
                 }
                 refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                update_watcher(&notebook, &watcher_manager);
             }
         });
     }
@@ -743,6 +997,7 @@ fn build_ui(app: &Application) {
         let notebook = notebook.clone();
         let ctx = ctx.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         bookmark_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, _, _)) = get_active_widgets(&notebook) {
@@ -755,6 +1010,7 @@ fn build_ui(app: &Application) {
                 bookmarks::add(&mut c.bookmarks, name, current);
                 drop(c);
                 sidebar::build(&sidebar_list, &ctx.borrow().bookmarks);
+                update_watcher(&notebook, &watcher_manager);
             }
         });
     }
@@ -773,6 +1029,7 @@ fn show_context_menu(
     search_entry: &SearchEntry,
     hidden_toggle: &CheckButton,
     sidebar_list: &ListBox,
+    watcher_manager: &Rc<RefCell<filesystem::watcher::WatcherManager>>,
     items: Vec<ItemObject>,
     x: f64,
     y: f64,
@@ -825,6 +1082,7 @@ fn show_context_menu(
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
         let item = single_item.clone();
 
         open_btn.connect_clicked(move |_| {
@@ -834,6 +1092,7 @@ fn show_context_menu(
                 if item.is_dir() {
                     navigate_to(&tab_state, item.get_path());
                     refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                    update_watcher(&notebook, &watcher_manager);
                 } else {
                     let _ = Command::new("xdg-open").arg(&item.get_path()).spawn();
                 }
@@ -850,12 +1109,13 @@ fn show_context_menu(
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
         open_tab_btn.connect_clicked(move |_| {
             popover.popdown();
             let Some(item) = single_item.clone() else { return; };
             if item.is_dir() {
-                add_tab(&notebook, &ctx, item.get_path(), &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                add_tab(&notebook, &ctx, item.get_path(), &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list, &watcher_manager);
             }
         });
     }
@@ -891,6 +1151,7 @@ fn show_context_menu(
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
         let single_item = single_item.clone();
 
         rename_btn.connect_clicked(move |_| {
@@ -907,6 +1168,7 @@ fn show_context_menu(
                 let search_entry = search_entry.clone();
                 let hidden_toggle = hidden_toggle.clone();
                 let sidebar_list = sidebar_list.clone();
+                let watcher_manager = watcher_manager.clone();
 
                 move |name| {
                     if name.is_empty() { return; }
@@ -915,6 +1177,7 @@ fn show_context_menu(
                     }
                     if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                         refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                        update_watcher(&notebook, &watcher_manager);
                     }
                 }
             });
@@ -930,6 +1193,7 @@ fn show_context_menu(
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
         let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
 
         trash_btn.connect_clicked(move |_| {
@@ -945,6 +1209,7 @@ fn show_context_menu(
             }
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                update_watcher(&notebook, &watcher_manager);
             }
         });
     }
@@ -969,7 +1234,6 @@ fn show_context_menu(
                 item.permissions(),
                 item.is_symlink()
             );
-
 
             dialogs::show_info(&window, "Properties", &message);
         });
