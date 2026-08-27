@@ -5,6 +5,7 @@ pub mod rename;
 pub mod trash;
 pub mod jobs;
 pub mod archive;
+pub mod batch_rename;
 
 use std::io;
 use std::path::{Path, PathBuf};
