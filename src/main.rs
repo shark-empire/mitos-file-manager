@@ -76,6 +76,109 @@ fn update_watcher(
     }
 }
 
+fn start_paste_job_ui(
+    window: &ApplicationWindow,
+    notebook: &Notebook,
+    ctx: &Rc<RefCell<AppContext>>,
+    location_entry: &Entry,
+    search_entry: &SearchEntry,
+    hidden_toggle: &CheckButton,
+    sidebar_list: &ListBox,
+    watcher_manager: &Rc<RefCell<filesystem::watcher::WatcherManager>>,
+    operation: PendingOp,
+    sources: Vec<PathBuf>,
+    destination: PathBuf,
+) {
+    if sources.is_empty() {
+        return;
+    }
+
+    let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
+    let handle = operations::jobs::start_paste_job(operation, sources, destination, sender);
+
+    let window_error = window.clone();
+    let notebook = notebook.clone();
+    let ctx = ctx.clone();
+    let location_entry = location_entry.clone();
+    let search_entry = search_entry.clone();
+    let hidden_toggle = hidden_toggle.clone();
+    let sidebar_list = sidebar_list.clone();
+    let watcher_manager = watcher_manager.clone();
+
+    ui::progress::show_progress_dialog(window, "File Operation", handle, receiver, move |result| {
+        if let Err(err) = result {
+            if !err.contains("Cancelled") {
+                dialogs::show_error(&window_error, &format!("File operation failed: {err}"));
+            }
+        }
+
+        if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+            refresh_tab(
+                &tab_state,
+                &store,
+                &ctx,
+                &location_entry,
+                &search_entry,
+                &hidden_toggle,
+                &sidebar_list,
+            );
+
+            update_watcher(&notebook, &watcher_manager);
+        }
+    });
+}
+
+fn start_trash_job_ui(
+    window: &ApplicationWindow,
+    notebook: &Notebook,
+    ctx: &Rc<RefCell<AppContext>>,
+    location_entry: &Entry,
+    search_entry: &SearchEntry,
+    hidden_toggle: &CheckButton,
+    sidebar_list: &ListBox,
+    watcher_manager: &Rc<RefCell<filesystem::watcher::WatcherManager>>,
+    paths: Vec<PathBuf>,
+) {
+    if paths.is_empty() {
+        return;
+    }
+
+    let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
+    let handle = operations::jobs::start_trash_job(paths, sender);
+
+    let window_error = window.clone();
+    let notebook = notebook.clone();
+    let ctx = ctx.clone();
+    let location_entry = location_entry.clone();
+    let search_entry = search_entry.clone();
+    let hidden_toggle = hidden_toggle.clone();
+    let sidebar_list = sidebar_list.clone();
+    let watcher_manager = watcher_manager.clone();
+
+    ui::progress::show_progress_dialog(window, "Trash", handle, receiver, move |result| {
+        if let Err(err) = result {
+            if !err.contains("Cancelled") {
+                dialogs::show_error(&window_error, &format!("Trash operation failed: {err}"));
+            }
+        }
+
+        if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+            refresh_tab(
+                &tab_state,
+                &store,
+                &ctx,
+                &location_entry,
+                &search_entry,
+                &hidden_toggle,
+                &sidebar_list,
+            );
+
+            update_watcher(&notebook, &watcher_manager);
+        }
+    });
+}
+
+
 fn refresh_tab(
     tab_state: &Rc<RefCell<TabState>>,
     store: &gio::ListStore,
@@ -538,20 +641,33 @@ fn build_ui(app: &Application) {
                     }
                     return glib::Propagation::Stop;
                 }
+                
                 k if ctrl && k == gtk::gdk::Key::v => {
                     let pending = ctx.borrow_mut().pending.take();
+
                     if let Some((operation, sources)) = pending {
-                        if let Some((tab_state, _, store, _)) = &active {
+                        if let Some((tab_state, _, _, _)) = &active {
                             let destination_dir = tab_state.borrow().current.clone();
-                            if let Err(err) = operations::paste_pending(&destination_dir, operation, &sources) {
-                                dialogs::show_error(&window, &format!("Paste failed: {err}"));
-                            }
-                            refresh_tab(tab_state, store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
-                            update_watcher(&notebook, &watcher_manager);
+
+                            start_paste_job_ui(
+                                &window,
+                                &notebook,
+                                &ctx,
+                                &location_entry,
+                                &search_entry,
+                                &hidden_toggle,
+                                &sidebar_list,
+                                &watcher_manager,
+                                operation,
+                                sources,
+                                destination_dir,
+                            );
                         }
                     }
+
                     return glib::Propagation::Stop;
                 }
+
                 k if ctrl && k == gtk::gdk::Key::t => {
                     if let Some((tab_state, _, _, _)) = &active {
                         let current = tab_state.borrow().current.clone();
@@ -600,25 +716,32 @@ fn build_ui(app: &Application) {
                     }
                     return glib::Propagation::Stop;
                 }
+                
                 k if key == gtk::gdk::Key::Delete => {
-                    if let Some((tab_state, _, store, selection)) = &active {
+                    if let Some((_, _, store, selection)) = &active {
                         let selected = grid_view::selected_items(selection, store);
+
                         if !selected.is_empty() {
-                            let mut last_error = None;
-                            for item in &selected {
-                                if let Err(err) = operations::trash::delete(&item.get_path()) {
-                                    last_error = Some(err);
-                                }
-                            }
-                            if let Some(err) = last_error {
-                                dialogs::show_error(&window, &format!("Could not move to trash: {err}"));
-                            }
-                            refresh_tab(tab_state, store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
-                            update_watcher(&notebook, &watcher_manager);
+                            let paths: Vec<PathBuf> =
+                                selected.iter().map(|item| item.get_path()).collect();
+
+                            start_trash_job_ui(
+                                &window,
+                                &notebook,
+                                &ctx,
+                                &location_entry,
+                                &search_entry,
+                                &hidden_toggle,
+                                &sidebar_list,
+                                &watcher_manager,
+                                paths,
+                            );
                         }
                     }
+
                     return glib::Propagation::Stop;
                 }
+
                 k if key == gtk::gdk::Key::F2 => {
                     if let Some((tab_state, _, store, selection)) = &active {
                         let selected = grid_view::selected_items(selection, store);
@@ -1048,17 +1171,30 @@ fn build_ui(app: &Application) {
 
         paste_btn.connect_clicked(move |_| {
             let pending = ctx.borrow_mut().pending.take();
-            let Some((operation, sources)) = pending else { return; };
 
-            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+            let Some((operation, sources)) = pending else {
+                return;
+            };
+
+            if let Some((tab_state, _, _, _)) = get_active_widgets(&notebook) {
                 let destination_dir = tab_state.borrow().current.clone();
-                if let Err(err) = operations::paste_pending(&destination_dir, operation, &sources) {
-                    dialogs::show_error(&window_error, &format!("Paste failed: {err}"));
-                }
-                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
-                update_watcher(&notebook, &watcher_manager);
+
+                start_paste_job_ui(
+                    &window_error,
+                    &notebook,
+                    &ctx,
+                    &location_entry,
+                    &search_entry,
+                    &hidden_toggle,
+                    &sidebar_list,
+                    &watcher_manager,
+                    operation,
+                    sources,
+                    destination_dir,
+                );
             }
         });
+
     }
 
     {
@@ -1072,23 +1208,29 @@ fn build_ui(app: &Application) {
         let watcher_manager = watcher_manager.clone();
 
         trash_btn.connect_clicked(move |_| {
-            if let Some((tab_state, _, store, selection)) = get_active_widgets(&notebook) {
+            if let Some((_, _, store, selection)) = get_active_widgets(&notebook) {
                 let selected = grid_view::selected_items(&selection, &store);
-                if selected.is_empty() { return; }
 
-                let mut last_error = None;
-                for item in &selected {
-                    if let Err(err) = operations::trash::delete(&item.get_path()) {
-                        last_error = Some(err);
-                    }
+                if selected.is_empty() {
+                    return;
                 }
-                if let Some(err) = last_error {
-                    dialogs::show_error(&window_error, &format!("Could not move to trash: {err}"));
-                }
-                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
-                update_watcher(&notebook, &watcher_manager);
+
+                let paths: Vec<PathBuf> = selected.iter().map(|item| item.get_path()).collect();
+
+                start_trash_job_ui(
+                    &window_error,
+                    &notebook,
+                    &ctx,
+                    &location_entry,
+                    &search_entry,
+                    &hidden_toggle,
+                    &sidebar_list,
+                    &watcher_manager,
+                    paths,
+                );
             }
         });
+
     }
 
     {
@@ -1292,25 +1434,26 @@ fn show_context_menu(
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
+
         let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
 
         trash_btn.connect_clicked(move |_| {
             popover.popdown();
-            let mut last_error = None;
-            for path in &paths {
-                if let Err(err) = operations::trash::delete(path) {
-                    last_error = Some(err);
-                }
-            }
-            if let Some(err) = last_error {
-                dialogs::show_error(&window, &format!("Could not move to trash: {err}"));
-            }
-            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
-                update_watcher(&notebook, &watcher_manager);
-            }
+
+            start_trash_job_ui(
+                &window,
+                &notebook,
+                &ctx,
+                &location_entry,
+                &search_entry,
+                &hidden_toggle,
+                &sidebar_list,
+                &watcher_manager,
+                paths.clone(),
+            );
         });
     }
+
 
     {
         let popover = popover.clone();
