@@ -5,3 +5,4 @@ pub mod item_object;
 pub mod sidebar;
 pub mod path_bar;
 pub mod progress;
+pub mod trash_view;
