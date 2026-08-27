@@ -4,3 +4,4 @@ pub mod grid_view;
 pub mod item_object;
 pub mod sidebar;
 pub mod path_bar;
+pub mod progress;
