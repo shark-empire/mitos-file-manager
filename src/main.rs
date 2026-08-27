@@ -50,7 +50,11 @@ enum JobRequest {
         archive_path: PathBuf,
         destination_dir: PathBuf,
     },
+    BatchRename {
+        renames: Vec<(PathBuf, PathBuf)>,
+    },
 }
+
 
 
 struct JobQueueState {
@@ -276,6 +280,40 @@ fn start_extract_archive_job_ui(
     );
 }
 
+fn start_batch_rename_job_ui(
+    window: &ApplicationWindow,
+    notebook: &Notebook,
+    ctx: &Rc<RefCell<AppContext>>,
+    location_entry: &Entry,
+    search_entry: &SearchEntry,
+    hidden_toggle: &CheckButton,
+    sidebar_list: &ListBox,
+    watcher_manager: &Rc<RefCell<filesystem::watcher::WatcherManager>>,
+    renames: Vec<(PathBuf, PathBuf)>,
+) {
+    if renames.is_empty() {
+        return;
+    }
+
+    let Some(queue) = location_entry.data::<JobQueue>("job-queue").map(|q| q.clone()) else {
+        return;
+    };
+
+    let ui = JobUi {
+        window: window.clone(),
+        notebook: notebook.clone(),
+        ctx: ctx.clone(),
+        location_entry: location_entry.clone(),
+        search_entry: search_entry.clone(),
+        hidden_toggle: hidden_toggle.clone(),
+        sidebar_list: sidebar_list.clone(),
+        watcher_manager: watcher_manager.clone(),
+    };
+
+    enqueue_job(&queue, JobRequest::BatchRename { renames }, ui);
+}
+
+
 
 fn prepare_paste_tasks(
     window: &ApplicationWindow,
@@ -405,6 +443,12 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
 
             (handle, "Extract")
         }
+        
+        JobRequest::BatchRename { renames } => {
+            let handle = operations::batch_rename::start_batch_rename_job(renames, sender);
+            (handle, "Batch Rename")
+        }
+
     };
 
 
@@ -1641,6 +1685,7 @@ fn show_context_menu(
     let move_btn = Button::with_label("Move");
     let rename_btn = Button::with_label("Rename");
     let trash_btn = Button::with_label("Trash");
+    let batch_rename_btn = Button::with_label("Batch Rename");
     let properties_btn = Button::with_label("Properties");
 
 
@@ -1654,6 +1699,7 @@ fn show_context_menu(
                 .map_or(false, |item| operations::archive::is_supported_archive(&item.get_path())),
     );
     rename_btn.set_sensitive(count == 1);
+    batch_rename_btn.set_sensitive(count >= 2);
     properties_btn.set_sensitive(count == 1);
 
 
@@ -1664,6 +1710,7 @@ fn show_context_menu(
     menu_box.append(&copy_btn);
     menu_box.append(&move_btn);
     menu_box.append(&rename_btn);
+    menu_box.append(&batch_rename_btn);
     menu_box.append(&trash_btn);
     menu_box.append(&properties_btn);
 
@@ -1860,6 +1907,55 @@ fn show_context_menu(
             });
         });
     }
+
+        {
+        let popover = popover.clone();
+        let window = window.clone();
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        let items_for_rename: Vec<(String, PathBuf)> = items
+            .iter()
+            .map(|item| (item.name(), item.get_path()))
+            .collect();
+
+        batch_rename_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            let window_clone = window.clone();
+            let notebook_clone = notebook.clone();
+            let ctx_clone = ctx.clone();
+            let location_entry_clone = location_entry.clone();
+            let search_entry_clone = search_entry.clone();
+            let hidden_toggle_clone = hidden_toggle.clone();
+            let sidebar_list_clone = sidebar_list.clone();
+            let watcher_manager_clone = watcher_manager.clone();
+
+            ui::batch_rename::show(
+                &window,
+                items_for_rename.clone(),
+                move |renames| {
+                    start_batch_rename_job_ui(
+                        &window_clone,
+                        &notebook_clone,
+                        &ctx_clone,
+                        &location_entry_clone,
+                        &search_entry_clone,
+                        &hidden_toggle_clone,
+                        &sidebar_list_clone,
+                        &watcher_manager_clone,
+                        renames,
+                    );
+                },
+            );
+        });
+    }
+
 
     {
         let popover = popover.clone();
