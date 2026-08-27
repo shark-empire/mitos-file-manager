@@ -8,10 +8,13 @@ mod operations;
 mod ui;
 
 use gtk::prelude::*;
+use gtk::glib;
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Entry, Label, ListBox,
     Orientation, ScrolledWindow, SelectionMode,
 };
+
+
 
 use std::cell::RefCell;
 use std::fs;
@@ -177,6 +180,151 @@ fn build_ui(app: &Application) {
 
         list.add_controller(right_click);
     }
+
+        {
+        let state = state.clone();
+        let list = list.clone();
+
+        let drag_source = gtk::DragSource::new();
+
+        drag_source.connect_prepare(move |_source, _x, _y| {
+            let selected = {
+                let s = state.borrow();
+                file_view::selected_items(&list, &s.items)
+            };
+
+            if selected.is_empty() {
+                return None;
+            }
+
+            let payload = selected
+                .iter()
+                .map(|item| item.path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let provider = gtk::gdk::ContentProvider::new_value(&payload);
+
+            Some((provider, gtk::gdk::DragAction::MOVE))
+        });
+
+        list.add_controller(drag_source);
+    }
+
+        {
+        let window_error = window.clone();
+        let state = state.clone();
+        let list = list.clone();
+        let location = location.clone();
+        let status = status.clone();
+
+        let string_type = <String as glib::StaticType>::static_type();
+
+        let drop_target = gtk::DropTarget::new(
+            string_type,
+            gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY,
+        );
+
+        drop_target.connect_drop(move |_target, value, _x, y| {
+            let Ok(payload) = value.get::<String>() else {
+                return false;
+            };
+
+            let sources: Vec<PathBuf> = payload.lines().map(|line| PathBuf::from(line)).collect();
+
+            if sources.is_empty() {
+                return false;
+            }
+
+            if let Some(row) = list.row_at_y(y as i32) {
+                let index = row.index();
+
+                if index >= 0 {
+                    let destination_item = {
+                        let s = state.borrow();
+                        s.items.get(index as usize).cloned()
+                    };
+
+                    if let Some(destination_item) = destination_item {
+                        if destination_item.is_dir {
+                            let mut moved = 0;
+                            let mut skipped = 0;
+                            let mut failed = 0;
+                            let mut last_error = None;
+
+                            for source in &sources {
+                                if !source.exists() {
+                                    skipped += 1;
+                                    continue;
+                                }
+
+                                // Cannot drop an item onto itself.
+                                if source.as_path() == destination_item.path.as_path() {
+                                    skipped += 1;
+                                    continue;
+                                }
+
+                                // Cannot move a folder into itself or into one of its children.
+                                if destination_item.path.starts_with(source) {
+                                    skipped += 1;
+                                    continue;
+                                }
+
+                                // If the destination is the same parent directory, treat as no-op.
+                                if source.parent() == Some(destination_item.path.as_path()) {
+                                    skipped += 1;
+                                    continue;
+                                }
+
+                                let file_name =
+                                    source.file_name().unwrap_or_default().to_os_string();
+
+                                let destination = operations::unique_destination(
+                                    &destination_item.path.join(file_name),
+                                );
+
+                                match operations::move_op::move_path(source, &destination) {
+                                    Ok(_) => {
+                                        moved += 1;
+                                    }
+                                    Err(err) => {
+                                        failed += 1;
+                                        last_error = Some(err);
+                                    }
+                                }
+                            }
+
+                            if failed == 0 && moved > 0 {
+                                status.set_label(&format!("Moved {moved} item(s)."));
+                            } else if failed == 0 && moved == 0 {
+                                status.set_label("No items were moved.");
+                            } else if moved == 0 {
+                                if let Some(err) = last_error {
+                                    dialogs::show_error(
+                                        &window_error,
+                                        &format!("Move failed: {err}"),
+                                    );
+                                }
+                            } else {
+                                status.set_label(&format!(
+                                    "Moved {moved} item(s), skipped {skipped}, failed {failed}."
+                                ));
+                            }
+
+                            refresh(&state, &list, &location, &status);
+
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            false
+        });
+
+        list.add_controller(drop_target);
+    }
+
 
     {
         let state = state.clone();
