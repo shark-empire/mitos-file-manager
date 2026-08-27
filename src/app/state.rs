@@ -4,7 +4,7 @@ use crate::navigation::history::History;
 use crate::operations::PendingOp;
 use std::path::PathBuf;
 
-pub struct AppState {
+pub struct TabState {
     pub current: PathBuf,
     pub history: History,
     pub pending: Option<(PendingOp, Vec<PathBuf>)>,
@@ -13,7 +13,7 @@ pub struct AppState {
     pub bookmarks: Vec<Bookmark>,
 }
 
-impl AppState {
+impl TabState {
     pub fn new(home: PathBuf) -> Self {
         Self {
             current: home,
