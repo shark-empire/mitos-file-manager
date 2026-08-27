@@ -41,6 +41,10 @@ mod imp {
 
         #[property(get, set)]
         pub is_symlink: RefCell<bool>,
+
+       #[property(get, set)]
+        pub size: RefCell<u64>,
+
     }
 
     #[glib::object_subclass]
@@ -78,6 +82,7 @@ impl ItemObject {
             .property("modified-str", modified_str)
             .property("permissions", &item.metadata.permissions)
             .property("is-symlink", item.metadata.is_symlink)
+            .property("size", item.metadata.size)
             .build()
     }
 
