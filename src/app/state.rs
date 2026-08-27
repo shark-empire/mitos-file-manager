@@ -6,7 +6,7 @@ use std::path::PathBuf;
 pub struct AppState {
     pub current: PathBuf,
     pub history: History,
-    pub pending: Option<(PendingOp, PathBuf)>,
+    pub pending: Option<(PendingOp, Vec<PathBuf>)>,
     pub show_hidden: bool,
     pub items: Vec<Item>,
 }
