@@ -1,27 +1,23 @@
 use crate::filesystem::directory::Item;
-use crate::navigation::bookmarks::{self, Bookmark};
 use crate::navigation::history::History;
-use crate::operations::PendingOp;
 use std::path::PathBuf;
 
 pub struct TabState {
     pub current: PathBuf,
     pub history: History,
-    pub pending: Option<(PendingOp, Vec<PathBuf>)>,
     pub show_hidden: bool,
     pub items: Vec<Item>,
-    pub bookmarks: Vec<Bookmark>,
+    pub search_query: String,
 }
 
 impl TabState {
-    pub fn new(home: PathBuf) -> Self {
+    pub fn new(path: PathBuf) -> Self {
         Self {
-            current: home,
+            current: path,
             history: History::new(),
-            pending: None,
             show_hidden: false,
             items: Vec::new(),
-            bookmarks: bookmarks::load(),
+            search_query: String::new(),
         }
     }
 }
