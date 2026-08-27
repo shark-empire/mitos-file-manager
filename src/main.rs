@@ -6,6 +6,8 @@ mod filesystem;
 mod navigation;
 mod operations;
 mod ui;
+mod mime;
+
 
 use gtk::prelude::*;
 use gtk::gio;
@@ -957,15 +959,17 @@ fn show_context_menu(
             let Some(item) = item.clone() else { return; };
 
             let message = format!(
-                "Name: {}\nPath: {}\nType: {}\nSize: {}\nModified: {}\nPermissions: {}\nSymlink: {}",
+                "Name: {}\nPath: {}\nType: {}\nMIME: {}\nSize: {}\nModified: {}\nPermissions: {}\nSymlink: {}",
                 item.name(),
                 item.get_path().display(),
                 if item.is_dir() { "Folder" } else { "File" },
+                item.mime_type(),
                 item.size_str(),
                 item.modified_str(),
                 item.permissions(),
                 item.is_symlink()
             );
+
 
             dialogs::show_info(&window, "Properties", &message);
         });
