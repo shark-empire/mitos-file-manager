@@ -14,8 +14,6 @@ use gtk::{
     Orientation, ScrolledWindow, SelectionMode,
 };
 
-
-
 use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
@@ -25,6 +23,7 @@ use std::rc::Rc;
 use app::state::AppState;
 use filesystem::directory;
 use filesystem::metadata;
+use navigation::bookmarks;
 use navigation::locations;
 use operations::PendingOp;
 use ui::dialogs;
@@ -59,6 +58,7 @@ fn build_ui(app: &Application) {
     let back_btn = Button::with_label("Back");
     let up_btn = Button::with_label("Up");
     let home_btn = Button::with_label("Home");
+    let bookmark_btn = Button::with_label("Bookmark");
     let new_folder_btn = Button::with_label("New Folder");
     let new_file_btn = Button::with_label("New File");
     let rename_btn = Button::with_label("Rename");
@@ -71,6 +71,7 @@ fn build_ui(app: &Application) {
     toolbar.append(&back_btn);
     toolbar.append(&up_btn);
     toolbar.append(&home_btn);
+    toolbar.append(&bookmark_btn);
     toolbar.append(&new_folder_btn);
     toolbar.append(&new_file_btn);
     toolbar.append(&rename_btn);
@@ -86,7 +87,6 @@ fn build_ui(app: &Application) {
 
     let sidebar_list = ListBox::new();
     sidebar_list.set_selection_mode(SelectionMode::Single);
-    sidebar::build(&sidebar_list);
 
     let sidebar_scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -125,33 +125,73 @@ fn build_ui(app: &Application) {
 
     let state = Rc::new(RefCell::new(AppState::new(locations::home_dir())));
 
-    refresh(&state, &list, &location, &status);
+    // Initial refresh builds the sidebar and the file list
+    refresh(&state, &list, &location, &status, &sidebar_list);
 
+    // --- Sidebar Click ---
     {
         let state = state.clone();
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         sidebar_list.connect_row_activated(move |_, row| {
-            let index = row.index();
-
-            if index < 0 {
-                return;
-            }
-
-            if let Some(path) = sidebar::place_at(index as usize) {
-                navigate_to(&state, &list, &location, &status, path);
+            if let Some(path) = sidebar::resolve_click(row) {
+                navigate_to(&state, &list, &location, &status, &sidebar_list, path);
             }
         });
     }
 
+    // --- Sidebar Right-Click (Remove Bookmark) ---
     {
         let window = window.clone();
         let state = state.clone();
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
+
+        let right_click = gtk::GestureClick::new();
+        right_click.set_button(3);
+
+        right_click.connect_pressed(move |_gesture, _n_press, x, y| {
+            if let Some(row) = sidebar_list.row_at_y(y as i32) {
+                let index = row.index();
+                if index >= 0 {
+                    sidebar_list.select_row(&row);
+                    
+                    if let Some(name) = row.name() {
+                        if let Some(path_str) = name.strip_prefix("bm:") {
+                            let path = PathBuf::from(path_str);
+                            show_sidebar_context_menu(
+                                &window,
+                                &state,
+                                &sidebar_list,
+                                &list,
+                                &location,
+                                &status,
+                                path,
+                                x,
+                                y,
+                            );
+                        }
+                    }
+                }
+            }
+        });
+
+        sidebar_list.add_controller(right_click);
+    }
+
+    // --- Main List Right-Click ---
+    {
+        let window = window.clone();
+        let state = state.clone();
+        let list = list.clone();
+        let location = location.clone();
+        let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         let right_click = gtk::GestureClick::new();
         right_click.set_button(3);
@@ -172,7 +212,7 @@ fn build_ui(app: &Application) {
                     };
 
                     if !items.is_empty() {
-                        show_context_menu(&window, &state, &list, &location, &status, items, x, y);
+                        show_context_menu(&window, &state, &list, &location, &status, &sidebar_list, items, x, y);
                     }
                 }
             }
@@ -181,7 +221,8 @@ fn build_ui(app: &Application) {
         list.add_controller(right_click);
     }
 
-        {
+    // --- Drag Source ---
+    {
         let state = state.clone();
         let list = list.clone();
 
@@ -211,12 +252,14 @@ fn build_ui(app: &Application) {
         list.add_controller(drag_source);
     }
 
-        {
+    // --- Drop Target ---
+    {
         let window_error = window.clone();
         let state = state.clone();
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         let string_type = <String as glib::StaticType>::static_type();
 
@@ -258,19 +301,16 @@ fn build_ui(app: &Application) {
                                     continue;
                                 }
 
-                                // Cannot drop an item onto itself.
                                 if source.as_path() == destination_item.path.as_path() {
                                     skipped += 1;
                                     continue;
                                 }
 
-                                // Cannot move a folder into itself or into one of its children.
                                 if destination_item.path.starts_with(source) {
                                     skipped += 1;
                                     continue;
                                 }
 
-                                // If the destination is the same parent directory, treat as no-op.
                                 if source.parent() == Some(destination_item.path.as_path()) {
                                     skipped += 1;
                                     continue;
@@ -311,7 +351,7 @@ fn build_ui(app: &Application) {
                                 ));
                             }
 
-                            refresh(&state, &list, &location, &status);
+                            refresh(&state, &list, &location, &status, &sidebar_list);
 
                             return true;
                         }
@@ -325,15 +365,16 @@ fn build_ui(app: &Application) {
         list.add_controller(drop_target);
     }
 
-
+    // --- Toolbar Actions ---
     {
         let state = state.clone();
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         back_btn.connect_clicked(move |_| {
-            go_back(&state, &list, &location, &status);
+            go_back(&state, &list, &location, &status, &sidebar_list);
         });
     }
 
@@ -342,12 +383,13 @@ fn build_ui(app: &Application) {
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         up_btn.connect_clicked(move |_| {
             let current = state.borrow().current.clone();
 
             if let Some(parent) = current.parent() {
-                navigate_to(&state, &list, &location, &status, parent.to_path_buf());
+                navigate_to(&state, &list, &location, &status, &sidebar_list, parent.to_path_buf());
             } else {
                 status.set_label("Already at the top level.");
             }
@@ -359,9 +401,10 @@ fn build_ui(app: &Application) {
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         home_btn.connect_clicked(move |_| {
-            navigate_to(&state, &list, &location, &status, locations::home_dir());
+            navigate_to(&state, &list, &location, &status, &sidebar_list, locations::home_dir());
         });
     }
 
@@ -369,13 +412,14 @@ fn build_ui(app: &Application) {
         let state = state.clone();
         let list = list.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         location.connect_activate(move |entry| {
             let text = entry.text().to_string();
             let path = PathBuf::from(text);
 
             if path.is_dir() {
-                navigate_to(&state, &list, entry, &status, path);
+                navigate_to(&state, &list, entry, &status, &sidebar_list, path);
             } else {
                 status.set_label("That location is not a directory.");
             }
@@ -387,10 +431,11 @@ fn build_ui(app: &Application) {
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         hidden_toggle.connect_toggled(move |toggle| {
             state.borrow_mut().show_hidden = toggle.is_active();
-            refresh(&state, &list, &location, &status);
+            refresh(&state, &list, &location, &status, &sidebar_list);
         });
     }
 
@@ -399,6 +444,7 @@ fn build_ui(app: &Application) {
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         list.connect_row_activated(move |_, row| {
             let index = row.index();
@@ -411,7 +457,7 @@ fn build_ui(app: &Application) {
 
             if let Some(item) = item {
                 if item.is_dir {
-                    navigate_to(&state, &list, &location, &status, item.path);
+                    navigate_to(&state, &list, &location, &status, &sidebar_list, item.path);
                 } else {
                     let _ = Command::new("xdg-open").arg(&item.path).spawn();
                 }
@@ -426,6 +472,7 @@ fn build_ui(app: &Application) {
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         new_folder_btn.connect_clicked(move |_| {
             dialogs::show_text_dialog(
@@ -439,6 +486,7 @@ fn build_ui(app: &Application) {
                     let list = list.clone();
                     let location = location.clone();
                     let status = status.clone();
+                    let sidebar_list = sidebar_list.clone();
 
                     move |name| {
                         if name.is_empty() {
@@ -454,7 +502,7 @@ fn build_ui(app: &Application) {
                             );
                         }
 
-                        refresh(&state, &list, &location, &status);
+                        refresh(&state, &list, &location, &status, &sidebar_list);
                     }
                 },
             );
@@ -468,6 +516,7 @@ fn build_ui(app: &Application) {
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         new_file_btn.connect_clicked(move |_| {
             dialogs::show_text_dialog(
@@ -481,6 +530,7 @@ fn build_ui(app: &Application) {
                     let list = list.clone();
                     let location = location.clone();
                     let status = status.clone();
+                    let sidebar_list = sidebar_list.clone();
 
                     move |name| {
                         if name.is_empty() {
@@ -496,7 +546,7 @@ fn build_ui(app: &Application) {
                             );
                         }
 
-                        refresh(&state, &list, &location, &status);
+                        refresh(&state, &list, &location, &status, &sidebar_list);
                     }
                 },
             );
@@ -510,6 +560,7 @@ fn build_ui(app: &Application) {
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         rename_btn.connect_clicked(move |_| {
             let selected = {
@@ -532,6 +583,7 @@ fn build_ui(app: &Application) {
                 let list = list.clone();
                 let location = location.clone();
                 let status = status.clone();
+                let sidebar_list = sidebar_list.clone();
 
                 move |name| {
                     if name.is_empty() {
@@ -542,7 +594,7 @@ fn build_ui(app: &Application) {
                         dialogs::show_error(&window_error, &format!("Could not rename: {err}"));
                     }
 
-                    refresh(&state, &list, &location, &status);
+                    refresh(&state, &list, &location, &status, &sidebar_list);
                 }
             });
         });
@@ -608,6 +660,7 @@ fn build_ui(app: &Application) {
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         paste_btn.connect_clicked(move |_| {
             let pending = state.borrow_mut().pending.take();
@@ -628,7 +681,7 @@ fn build_ui(app: &Application) {
                 }
             }
 
-            refresh(&state, &list, &location, &status);
+            refresh(&state, &list, &location, &status, &sidebar_list);
         });
     }
 
@@ -638,6 +691,7 @@ fn build_ui(app: &Application) {
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         trash_btn.connect_clicked(move |_| {
             let selected = {
@@ -678,7 +732,34 @@ fn build_ui(app: &Application) {
                 ));
             }
 
-            refresh(&state, &list, &location, &status);
+            refresh(&state, &list, &location, &status, &sidebar_list);
+        });
+    }
+
+    // --- Bookmark Button ---
+    {
+        let state = state.clone();
+        let sidebar_list = sidebar_list.clone();
+        let status = status.clone();
+
+        bookmark_btn.connect_clicked(move |_| {
+            let mut s = state.borrow_mut();
+            let current = s.current.clone();
+            
+            let name = current.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| current.to_string_lossy().to_string());
+
+            if s.bookmarks.iter().any(|b| b.path == current) {
+                status.set_label("This directory is already bookmarked.");
+                return;
+            }
+
+            bookmarks::add(&mut s.bookmarks, name, current);
+            drop(s); 
+            
+            sidebar::build(&sidebar_list, &state.borrow().bookmarks);
+            status.set_label("Added bookmark.");
         });
     }
 
@@ -694,6 +775,7 @@ fn navigate_to(
     list: &ListBox,
     location: &Entry,
     status: &Label,
+    sidebar_list: &ListBox,
     requested: PathBuf,
 ) {
     let path = normalize(requested);
@@ -712,21 +794,33 @@ fn navigate_to(
         }
     }
 
-    refresh(state, list, location, status);
+    refresh(state, list, location, status, sidebar_list);
 }
 
-fn go_back(state: &Rc<RefCell<AppState>>, list: &ListBox, location: &Entry, status: &Label) {
+fn go_back(
+    state: &Rc<RefCell<AppState>>, 
+    list: &ListBox, 
+    location: &Entry, 
+    status: &Label,
+    sidebar_list: &ListBox,
+) {
     let previous = state.borrow_mut().history.pop();
 
     if let Some(previous) = previous {
         state.borrow_mut().current = previous;
-        refresh(state, list, location, status);
+        refresh(state, list, location, status, sidebar_list);
     } else {
         status.set_label("No previous location.");
     }
 }
 
-fn refresh(state: &Rc<RefCell<AppState>>, list: &ListBox, location: &Entry, status: &Label) {
+fn refresh(
+    state: &Rc<RefCell<AppState>>, 
+    list: &ListBox, 
+    location: &Entry, 
+    status: &Label,
+    sidebar_list: &ListBox,
+) {
     let mut s = state.borrow_mut();
     let current = s.current.clone();
 
@@ -740,6 +834,9 @@ fn refresh(state: &Rc<RefCell<AppState>>, list: &ListBox, location: &Entry, stat
     status.set_label(&format!("{} · {} items", current.display(), items.len()));
 
     s.items = items;
+    
+    // Rebuild sidebar to reflect current bookmarks
+    sidebar::build(sidebar_list, &s.bookmarks);
 }
 
 fn show_context_menu(
@@ -748,6 +845,7 @@ fn show_context_menu(
     list: &ListBox,
     location: &Entry,
     status: &Label,
+    sidebar_list: &ListBox,
     items: Vec<directory::Item>,
     x: f64,
     y: f64,
@@ -798,6 +896,7 @@ fn show_context_menu(
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
         let item = single_item.clone();
 
         open_btn.connect_clicked(move |_| {
@@ -808,7 +907,7 @@ fn show_context_menu(
             };
 
             if item.is_dir {
-                navigate_to(&state, &list, &location, &status, item.path.clone());
+                navigate_to(&state, &list, &location, &status, &sidebar_list, item.path.clone());
             } else {
                 let _ = Command::new("xdg-open").arg(&item.path).spawn();
             }
@@ -860,6 +959,7 @@ fn show_context_menu(
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
         let single_item = single_item.clone();
 
         rename_btn.connect_clicked(move |_| {
@@ -878,6 +978,7 @@ fn show_context_menu(
                 let list = list.clone();
                 let location = location.clone();
                 let status = status.clone();
+                let sidebar_list = sidebar_list.clone();
 
                 move |name| {
                     if name.is_empty() {
@@ -888,7 +989,7 @@ fn show_context_menu(
                         dialogs::show_error(&window, &format!("Could not rename: {err}"));
                     }
 
-                    refresh(&state, &list, &location, &status);
+                    refresh(&state, &list, &location, &status, &sidebar_list);
                 }
             });
         });
@@ -901,6 +1002,7 @@ fn show_context_menu(
         let list = list.clone();
         let location = location.clone();
         let status = status.clone();
+        let sidebar_list = sidebar_list.clone();
 
         let paths: Vec<PathBuf> = items.iter().map(|item| item.path.clone()).collect();
         let count = paths.len();
@@ -936,7 +1038,7 @@ fn show_context_menu(
                 ));
             }
 
-            refresh(&state, &list, &location, &status);
+            refresh(&state, &list, &location, &status, &sidebar_list);
         });
     }
 
@@ -976,6 +1078,53 @@ fn show_context_menu(
             );
 
             dialogs::show_info(&window, "Properties", &message);
+        });
+    }
+
+    popover.popup();
+}
+
+fn show_sidebar_context_menu(
+    window: &ApplicationWindow,
+    state: &Rc<RefCell<AppState>>,
+    sidebar_list: &ListBox,
+    list: &ListBox,
+    location: &Entry,
+    status: &Label,
+    path: PathBuf,
+    x: f64,
+    y: f64,
+) {
+    let popover = gtk::Popover::new();
+    popover.set_has_arrow(true);
+    popover.set_autohide(true);
+    popover.set_parent(sidebar_list);
+    popover.set_pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1));
+
+    let menu_box = GtkBox::new(Orientation::Vertical, 6);
+    menu_box.set_margin_top(6);
+    menu_box.set_margin_bottom(6);
+    menu_box.set_margin_start(6);
+    menu_box.set_margin_end(6);
+
+    let remove_btn = Button::with_label("Remove Bookmark");
+    menu_box.append(&remove_btn);
+
+    popover.set_child(Some(&menu_box));
+
+    {
+        let popover = popover.clone();
+        let state = state.clone();
+        let sidebar_list = sidebar_list.clone();
+        let status = status.clone();
+
+        remove_btn.connect_clicked(move |_| {
+            popover.popdown();
+            let mut s = state.borrow_mut();
+            bookmarks::remove(&mut s.bookmarks, &path);
+            drop(s);
+            sidebar::build(&sidebar_list, &state.borrow().bookmarks);
+            status.set_label("Removed bookmark.");
         });
     }
 
