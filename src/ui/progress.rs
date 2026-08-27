@@ -20,8 +20,8 @@ pub fn show_progress_dialog<F>(
     let window = gtk::Window::builder()
         .title(title)
         .transient_for(parent)
-        .modal(true)
-        .default_width(460)
+        .modal(false)
+        .default_width(480)
         .build();
 
     let vbox = GtkBox::new(Orientation::Vertical, 8);
@@ -37,16 +37,36 @@ pub fn show_progress_dialog<F>(
     let bar = ProgressBar::new();
     bar.set_show_text(true);
 
+    let controls = GtkBox::new(Orientation::Horizontal, 8);
+
+    let pause_btn = Button::with_label("Pause");
     let cancel_btn = Button::with_label("Cancel");
-    cancel_btn.set_halign(gtk::Align::End);
+
+    controls.append(&pause_btn);
+    controls.append(&cancel_btn);
 
     vbox.append(&label);
     vbox.append(&bar);
-    vbox.append(&cancel_btn);
+    vbox.append(&controls);
 
     window.set_child(Some(&vbox));
 
     let closed = Rc::new(Cell::new(false));
+
+    {
+        let pause = handle.pause.clone();
+
+        pause_btn.connect_clicked(move |btn| {
+            let paused = !pause.load(Ordering::Relaxed);
+            pause.store(paused, Ordering::Relaxed);
+
+            if paused {
+                btn.set_label("Resume");
+            } else {
+                btn.set_label("Pause");
+            }
+        });
+    }
 
     {
         let cancel = handle.cancel.clone();
