@@ -534,7 +534,10 @@ fn refresh_tab(
     grid_view::render(store, &items);
     s.items = items;
 
-    sidebar::build(sidebar_list, &ctx.borrow().bookmarks);
+    if let Some(win) = location_entry.data::<gtk::ApplicationWindow>("main-window") {
+        sidebar::build(sidebar_list, &ctx.borrow().bookmarks, &win);
+    }
+
 
     if let Some(status_label) = location_entry.data::<Label>("status-label") {
         let free = filesystem_free_string(&current);
@@ -902,6 +905,7 @@ fn build_ui(app: &Application) {
 
     window.set_child(Some(&root));
 
+   location_entry.set_data("main-window", window.clone());
 
 
     add_tab(&notebook, &ctx, locations::home_dir(), &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list, &watcher_manager);
@@ -1058,7 +1062,7 @@ fn build_ui(app: &Application) {
                         }
                     }
                     return glib::Propagation::Stop;
-                }
+                }skk
                 
                 k if key == gtk::gdk::Key::Delete => {
                     if let Some((_, _, store, selection)) = &active {
@@ -1085,6 +1089,8 @@ fn build_ui(app: &Application) {
                     return glib::Propagation::Stop;
                 }
 
+
+                 l
                 k if key == gtk::gdk::Key::F2 => {
                     if let Some((tab_state, _, store, selection)) = &active {
                         let selected = grid_view::selected_items(selection, store);
@@ -1126,6 +1132,68 @@ fn build_ui(app: &Application) {
             }
 
             glib::Propagation::Proceed
+        });
+    }
+
+
+        // --- Volume Monitor (USB / Network Hotplug) ---
+    {
+        let monitor = gio::VolumeMonitor::get();
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        let rebuild_and_check = move |unmounted_path: Option<PathBuf>| {
+            // 1. Rebuild Sidebar
+            if let Some(win) = location_entry.data::<gtk::ApplicationWindow>("main-window") {
+                sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
+            }
+
+            // 2. If a drive was unplugged, check if the active tab was looking at it
+            if let Some(lost_path) = unmounted_path {
+                if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                    let current = tab_state.borrow().current.clone();
+                    if current.starts_with(&lost_path) || current == lost_path {
+                        // The drive we are viewing was pulled out! Go Home.
+                        tab_state.borrow_mut().current = locations::home_dir();
+                        refresh_tab(
+                            &tab_state,
+                            &store,
+                            &ctx,
+                            &location_entry,
+                            &search_entry,
+                            &hidden_toggle,
+                            &sidebar_list,
+                        );
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                }
+            }
+        };
+
+        let rebuild_add = rebuild_and_check.clone();
+        monitor.connect_mount_added(move |_, _| {
+            rebuild_add(None);
+        });
+
+        let rebuild_remove = rebuild_and_check.clone();
+        monitor.connect_mount_removed(move |_, mount| {
+            let path = mount.root().path();
+            rebuild_remove(path);
+        });
+
+        let rebuild_vol_add = rebuild_and_check.clone();
+        monitor.connect_volume_added(move |_, _| {
+            rebuild_vol_add(None);
+        });
+
+        let rebuild_vol_rem = rebuild_and_check.clone();
+        monitor.connect_volume_removed(move |_, _| {
+            rebuild_vol_rem(None);
         });
     }
 
@@ -1226,7 +1294,7 @@ fn build_ui(app: &Application) {
 
     {
         let window = window.clone();
-        let notebook = notebook.clone();
+        aelet notebook = notebook.clone();
         let ctx = ctx.clone();
         let location_entry = location_entry.clone();
         let search_entry = search_entry.clone();
@@ -1635,7 +1703,10 @@ fn build_ui(app: &Application) {
 
                 bookmarks::add(&mut c.bookmarks, name, current);
                 drop(c);
-                sidebar::build(&sidebar_list, &ctx.borrow().bookmarks);
+     if let Some(win) = location_entry.data::<gtk::ApplicationWindow>("main-window") {
+        sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
+    }
+    
                 update_watcher(&notebook, &watcher_manager);
             }
         });
@@ -1911,7 +1982,7 @@ fn show_context_menu(
         {
         let popover = popover.clone();
         let window = window.clone();
-        let notebook = notebook.clone();
+        let notebook = notebooki.clone();
         let ctx = ctx.clone();
         let location_entry = location_entry.clone();
         let search_entry = search_entry.clone();
@@ -2056,7 +2127,10 @@ fn show_sidebar_context_menu(
         remove_btn.connect_clicked(move |_| {
             popover.popdown();
             bookmarks::remove(&mut ctx.borrow_mut().bookmarks, &path);
-            sidebar::build(&sidebar_list, &ctx.borrow().bookmarks);
+     if let Some(win) = location_entry.data::<gtk::ApplicationWindow>("main-window") {
+        sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
+    }
+
             
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
