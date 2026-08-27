@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct History {
     stack: Vec<PathBuf>,
 }
@@ -16,5 +16,9 @@ impl History {
 
     pub fn pop(&mut self) -> Option<PathBuf> {
         self.stack.pop()
+    }
+
+    pub fn clear(&mut self) {
+        self.stack.clear();
     }
 }
