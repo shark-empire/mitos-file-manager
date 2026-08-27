@@ -94,3 +94,62 @@ pub fn show_info(parent: &ApplicationWindow, title: &str, message: &str) {
 
     dialog.present();
 }
+
+pub fn choose_conflict_policy(
+    parent: &ApplicationWindow,
+) -> Option<crate::operations::jobs::ConflictPolicy> {
+    use crate::operations::jobs::ConflictPolicy;
+    use gtk::glib;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let dialog = Dialog::builder()
+        .title("File Conflict")
+        .transient_for(parent)
+        .modal(true)
+        .build();
+
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Skip Existing", ResponseType::Reject);
+    dialog.add_button("Replace", ResponseType::Yes);
+    dialog.add_button("Keep Both", ResponseType::Accept);
+
+    let content = dialog.content_area();
+
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+
+    let label = Label::new(Some(
+        "Some files already exist in the destination.\n\nWhat should MITOS Files do?",
+    ));
+
+    label.set_wrap(true);
+    content.append(&label);
+
+    let loop_ = glib::MainLoop::new(None, false);
+    let result = Rc::new(Cell::new(None));
+
+    let result_clone = result.clone();
+    let loop_clone = loop_.clone();
+
+    dialog.connect_response(move |dialog, response| {
+        let chosen = match response {
+            ResponseType::Yes => Some(ConflictPolicy::Replace),
+            ResponseType::Accept => Some(ConflictPolicy::KeepBoth),
+            ResponseType::Reject => Some(ConflictPolicy::SkipExisting),
+            _ => None,
+        };
+
+        result_clone.set(chosen);
+        dialog.close();
+        loop_clone.quit();
+    });
+
+    dialog.present();
+    loop_.run();
+
+    result.get()
+}
+
