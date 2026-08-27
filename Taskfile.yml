@@ -1,0 +1,123 @@
+version: "3"
+
+vars:
+  PROJECT: mitos-file-manager
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task: help
+
+  help:
+    desc: List all available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  deps:
+    desc: Install GTK4 and required development packages
+    cmds:
+      - |
+        set -e
+
+        if [ "$(id -u)" -eq 0 ]; then
+          SUDO=""
+        else
+          SUDO="sudo"
+        fi
+
+        echo "Detecting package manager..."
+
+        if command -v apt >/dev/null 2>&1; then
+          echo "Using apt..."
+          $SUDO apt update
+          $SUDO apt install -y \
+            build-essential \
+            pkg-config \
+            libgtk-4-dev \
+            xdg-utils
+
+        elif command -v dnf >/dev/null 2>&1; then
+          echo "Using dnf..."
+          $SUDO dnf install -y \
+            gcc \
+            gcc-c++ \
+            pkgconf \
+            gtk4-devel \
+            xdg-utils
+
+        elif command -v pacman >/dev/null 2>&1; then
+          echo "Using pacman..."
+          $SUDO pacman -Sy --needed --noconfirm \
+            base-devel \
+            pkgconf \
+            gtk4 \
+            xdg-utils
+
+        elif command -v zypper >/dev/null 2>&1; then
+          echo "Using zypper..."
+          $SUDO zypper install -y --no-recommends \
+            gcc-c++ \
+            pkgconf \
+            gtk4-devel \
+            xdg-utils
+
+        else
+          echo "Unsupported package manager."
+          echo "Please install GTK4 development packages manually."
+          exit 1
+        fi
+
+  rust-tools:
+    desc: Install rustfmt and clippy
+    cmds:
+      - rustup component add rustfmt clippy
+
+  fmt:
+    desc: Check formatting without modifying files
+    cmds:
+      - cargo fmt --all -- --check
+
+  fmt-write:
+    desc: Format code in place
+    cmds:
+      - cargo fmt --all
+
+  check:
+    desc: Run cargo check
+    cmds:
+      - cargo check --all-targets --all-features
+
+  clippy:
+    desc: Run clippy with warnings as errors
+    cmds:
+      - cargo clippy --all-targets --all-features -- -D warnings
+
+  build:
+    desc: Build debug binary
+    cmds:
+      - cargo build
+
+  build-release:
+    desc: Build release binary
+    cmds:
+      - cargo build --release
+
+  run:
+    desc: Run the file manager
+    cmds:
+      - cargo run
+
+  test:
+    desc: Run tests
+    cmds:
+      - cargo test --all-targets --all-features
+
+  ci:
+    desc: CI-style validation - format check, lint, check, build
+    cmds:
+      - task: fmt
+      - task: clippy
+      - task: check
+      - task: build
