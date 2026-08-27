@@ -42,7 +42,16 @@ enum JobRequest {
     Trash {
         paths: Vec<PathBuf>,
     },
+    CompressZip {
+        sources: Vec<PathBuf>,
+        archive_path: PathBuf,
+    },
+    ExtractArchive {
+        archive_path: PathBuf,
+        destination_dir: PathBuf,
+    },
 }
+
 
 struct JobQueueState {
     pending: VecDeque<JobRequest>,
@@ -181,6 +190,93 @@ fn start_trash_job_ui(
     enqueue_job(&queue, JobRequest::Trash { paths }, ui);
 }
 
+fn start_compress_zip_job_ui(
+    window: &ApplicationWindow,
+    notebook: &Notebook,
+    ctx: &Rc<RefCell<AppContext>>,
+    location_entry: &Entry,
+    search_entry: &SearchEntry,
+    hidden_toggle: &CheckButton,
+    sidebar_list: &ListBox,
+    watcher_manager: &Rc<RefCell<filesystem::watcher::WatcherManager>>,
+    sources: Vec<PathBuf>,
+    destination_dir: PathBuf,
+) {
+    if sources.is_empty() {
+        return;
+    }
+
+    let archive_path = operations::archive::default_archive_path(&destination_dir);
+
+    let Some(queue) = location_entry.data::<JobQueue>("job-queue").map(|q| q.clone()) else {
+        return;
+    };
+
+    let ui = JobUi {
+        window: window.clone(),
+        notebook: notebook.clone(),
+        ctx: ctx.clone(),
+        location_entry: location_entry.clone(),
+        search_entry: search_entry.clone(),
+        hidden_toggle: hidden_toggle.clone(),
+        sidebar_list: sidebar_list.clone(),
+        watcher_manager: watcher_manager.clone(),
+    };
+
+    enqueue_job(
+        &queue,
+        JobRequest::CompressZip {
+            sources,
+            archive_path,
+        },
+        ui,
+    );
+}
+
+fn start_extract_archive_job_ui(
+    window: &ApplicationWindow,
+    notebook: &Notebook,
+    ctx: &Rc<RefCell<AppContext>>,
+    location_entry: &Entry,
+    search_entry: &SearchEntry,
+    hidden_toggle: &CheckButton,
+    sidebar_list: &ListBox,
+    watcher_manager: &Rc<RefCell<filesystem::watcher::WatcherManager>>,
+    archive_path: PathBuf,
+    destination_dir: PathBuf,
+) {
+    if !archive_path.exists() {
+        return;
+    }
+
+    let extract_dir = operations::archive::default_extract_dir(&destination_dir, &archive_path);
+
+    let Some(queue) = location_entry.data::<JobQueue>("job-queue").map(|q| q.clone()) else {
+        return;
+    };
+
+    let ui = JobUi {
+        window: window.clone(),
+        notebook: notebook.clone(),
+        ctx: ctx.clone(),
+        location_entry: location_entry.clone(),
+        search_entry: search_entry.clone(),
+        hidden_toggle: hidden_toggle.clone(),
+        sidebar_list: sidebar_list.clone(),
+        watcher_manager: watcher_manager.clone(),
+    };
+
+    enqueue_job(
+        &queue,
+        JobRequest::ExtractArchive {
+            archive_path,
+            destination_dir: extract_dir,
+        },
+        ui,
+    );
+}
+
+
 fn prepare_paste_tasks(
     window: &ApplicationWindow,
     sources: Vec<PathBuf>,
@@ -284,11 +380,33 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
             let handle = operations::jobs::start_paste_job(operation, tasks, sender);
             (handle, "File Operation")
         }
+
         JobRequest::Trash { paths } => {
             let handle = operations::jobs::start_trash_job(paths, sender);
             (handle, "Trash")
         }
+
+        JobRequest::CompressZip {
+            sources,
+            archive_path,
+        } => {
+            let handle =
+                operations::archive::start_compress_zip_job(sources, archive_path, sender);
+
+            (handle, "Compress")
+        }
+
+        JobRequest::ExtractArchive {
+            archive_path,
+            destination_dir,
+        } => {
+            let handle =
+                operations::archive::start_extract_job(archive_path, destination_dir, sender);
+
+            (handle, "Extract")
+        }
     };
+
 
     let queue_for_done = queue.clone();
     let ui_for_done = ui.clone();
@@ -1517,24 +1635,38 @@ fn show_context_menu(
 
     let open_btn = Button::with_label("Open");
     let open_tab_btn = Button::with_label("Open in New Tab");
+    let compress_btn = Button::with_label("Compress to ZIP");
+    let extract_btn = Button::with_label("Extract Here");
     let copy_btn = Button::with_label("Copy");
     let move_btn = Button::with_label("Move");
     let rename_btn = Button::with_label("Rename");
     let trash_btn = Button::with_label("Trash");
     let properties_btn = Button::with_label("Properties");
 
+
     open_btn.set_sensitive(count == 1);
     open_tab_btn.set_sensitive(count == 1 && single_item.as_ref().map_or(false, |i| i.is_dir()));
+    compress_btn.set_sensitive(!items.is_empty());
+    extract_btn.set_sensitive(
+        count == 1
+            && single_item
+                .as_ref()
+                .map_or(false, |item| operations::archive::is_supported_archive(&item.get_path())),
+    );
     rename_btn.set_sensitive(count == 1);
     properties_btn.set_sensitive(count == 1);
 
+
     menu_box.append(&open_btn);
     menu_box.append(&open_tab_btn);
+    menu_box.append(&compress_btn);
+    menu_box.append(&extract_btn);
     menu_box.append(&copy_btn);
     menu_box.append(&move_btn);
     menu_box.append(&rename_btn);
     menu_box.append(&trash_btn);
     menu_box.append(&properties_btn);
+
 
     popover.set_child(Some(&menu_box));
 
@@ -1583,6 +1715,87 @@ fn show_context_menu(
             }
         });
     }
+
+        {
+        let popover = popover.clone();
+        let window = window.clone();
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        let sources: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
+
+        compress_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            if let Some((tab_state, _, _, _)) = get_active_widgets(&notebook) {
+                let destination_dir = tab_state.borrow().current.clone();
+
+                start_compress_zip_job_ui(
+                    &window,
+                    &notebook,
+                    &ctx,
+                    &location_entry,
+                    &search_entry,
+                    &hidden_toggle,
+                    &sidebar_list,
+                    &watcher_manager,
+                    sources.clone(),
+                    destination_dir,
+                );
+            }
+        });
+    }
+
+
+        {
+        let popover = popover.clone();
+        let window = window.clone();
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        let archive_item = single_item.clone();
+
+        extract_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            let Some(item) = archive_item.clone() else {
+                return;
+            };
+
+            if !operations::archive::is_supported_archive(&item.get_path()) {
+                return;
+            }
+
+            if let Some((tab_state, _, _, _)) = get_active_widgets(&notebook) {
+                let destination_dir = tab_state.borrow().current.clone();
+
+                start_extract_archive_job_ui(
+                    &window,
+                    &notebook,
+                    &ctx,
+                    &location_entry,
+                    &search_entry,
+                    &hidden_toggle,
+                    &sidebar_list,
+                    &watcher_manager,
+                    item.get_path(),
+                    destination_dir,
+                );
+            }
+        });
+    }
+
+    
 
     {
         let popover = popover.clone();
