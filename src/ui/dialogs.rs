@@ -68,3 +68,29 @@ pub fn show_error(parent: &ApplicationWindow, message: &str) {
 
     dialog.present();
 }
+
+pub fn show_info(parent: &ApplicationWindow, title: &str, message: &str) {
+    let dialog = Dialog::builder()
+        .title(title)
+        .transient_for(parent)
+        .modal(true)
+        .build();
+
+    dialog.add_button("OK", ResponseType::Close);
+
+    let label = Label::new(Some(message));
+    label.set_wrap(true);
+
+    label.set_margin_top(12);
+    label.set_margin_bottom(12);
+    label.set_margin_start(12);
+    label.set_margin_end(12);
+
+    dialog.content_area().append(&label);
+
+    dialog.connect_response(|dialog, _| {
+        dialog.close();
+    });
+
+    dialog.present();
+}
