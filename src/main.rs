@@ -8,7 +8,7 @@ mod operations;
 mod ui;
 
 use gtk::prelude::*;
-use gtk::glib;
+use gtk::gio;
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Entry, Label, ListBox,
     Notebook, Orientation, ScrolledWindow, SearchEntry, SelectionMode,
@@ -23,12 +23,12 @@ use std::rc::Rc;
 use app::context::AppContext;
 use app::state::TabState;
 use filesystem::directory;
-use filesystem::metadata;
 use navigation::bookmarks;
 use navigation::locations;
 use operations::PendingOp;
 use ui::dialogs;
-use ui::file_view;
+use ui::grid_view;
+use ui::item_object::ItemObject;
 use ui::sidebar;
 
 fn main() {
@@ -40,12 +40,14 @@ fn main() {
     let _ = app.run();
 }
 
-fn get_active_widgets(notebook: &Notebook) -> Option<(Rc<RefCell<TabState>>, ListBox)> {
+fn get_active_widgets(notebook: &Notebook) -> Option<(Rc<RefCell<TabState>>, gtk::GridView, gio::ListStore, gtk::MultiSelection)> {
     let page_num = notebook.current_page()?;
     let widget = notebook.nth_page(page_num)?;
     let state = widget.data::<Rc<RefCell<TabState>>>("tab-state")?.clone();
-    let list = widget.data::<ListBox>("list-box")?.clone();
-    Some((state, list))
+    let grid = widget.data::<gtk::GridView>("grid-view")?.clone();
+    let store = widget.data::<gio::ListStore>("list-store")?.clone();
+    let selection = widget.data::<gtk::MultiSelection>("selection-model")?.clone();
+    Some((state, grid, store, selection))
 }
 
 fn normalize(path: PathBuf) -> PathBuf {
@@ -54,9 +56,7 @@ fn normalize(path: PathBuf) -> PathBuf {
 
 fn navigate_to(tab_state: &Rc<RefCell<TabState>>, requested: PathBuf) {
     let path = normalize(requested);
-    if !path.is_dir() {
-        return;
-    }
+    if !path.is_dir() { return; }
     let mut s = tab_state.borrow_mut();
     if s.current != path {
         s.history.push(s.current.clone());
@@ -73,7 +73,7 @@ fn go_back(tab_state: &Rc<RefCell<TabState>>) {
 
 fn refresh_tab(
     tab_state: &Rc<RefCell<TabState>>,
-    list: &ListBox,
+    store: &gio::ListStore,
     ctx: &Rc<RefCell<AppContext>>,
     location_entry: &Entry,
     search_entry: &SearchEntry,
@@ -83,7 +83,6 @@ fn refresh_tab(
     let mut s = tab_state.borrow_mut();
     let current = s.current.clone();
 
-    // Sync toolbar without triggering infinite loops
     if location_entry.text().as_str() != current.display().to_string() {
         location_entry.set_text(&current.display().to_string());
     }
@@ -94,11 +93,8 @@ fn refresh_tab(
         hidden_toggle.set_active(s.show_hidden);
     }
 
-    file_view::clear(list);
-
     let mut items = directory::read_items(&current, s.show_hidden);
 
-    // Real-time Search Filter
     if !s.search_query.is_empty() {
         let q = s.search_query.to_lowercase();
         items.retain(|item| item.name.to_lowercase().contains(&q));
@@ -110,7 +106,7 @@ fn refresh_tab(
         _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
-    file_view::render(list, &items);
+    grid_view::render(store, &items);
     s.items = items;
 
     sidebar::build(sidebar_list, &ctx.borrow().bookmarks);
@@ -127,35 +123,29 @@ fn add_tab(
     sidebar_list: &ListBox,
 ) {
     let tab_state = Rc::new(RefCell::new(TabState::new(path.clone())));
-
-    let list = ListBox::new();
-    list.set_selection_mode(SelectionMode::Multiple);
+    let (store, selection) = grid_view::create_model();
+    let grid = grid_view::create_grid_view(&selection);
 
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .build();
-    scrolled.set_child(Some(&list));
+    scrolled.set_child(Some(&grid));
     scrolled.set_vexpand(true);
 
     let page_widget = GtkBox::new(Orientation::Vertical, 0);
     page_widget.append(&scrolled);
 
     page_widget.set_data("tab-state", tab_state.clone());
-    page_widget.set_data("list-box", list.clone());
+    page_widget.set_data("grid-view", grid.clone());
+    page_widget.set_data("list-store", store.clone());
+    page_widget.set_data("selection-model", selection.clone());
 
-    // Tab Label with Close Button
     let tab_label = GtkBox::new(Orientation::Horizontal, 4);
-    let label_text = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string_lossy().to_string());
+    let label_text = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string_lossy().to_string());
     let label = Label::new(Some(&label_text));
-
-    let close_btn = Button::new();
-    close_btn.set_label("x");
+    let close_btn = Button::with_label("x");
     close_btn.set_has_frame(false);
-
     tab_label.append(&label);
     tab_label.append(&close_btn);
 
@@ -172,208 +162,119 @@ fn add_tab(
         });
     }
 
-    // --- Controllers ---
-    
     // 1. Row Activated (Double Click / Enter)
     {
         let notebook = notebook.clone();
         let ctx = ctx.clone();
-        let window = window.clone();
         let location_entry = location_entry.clone();
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
 
-        list.connect_row_activated(move |_, row| {
-            let index = row.index();
-            if index < 0 {
-                return;
-            }
-
-            if let Some((tab_state, _)) = get_active_widgets(&notebook) {
-                let item = tab_state.borrow().items.get(index as usize).cloned();
-                if let Some(item) = item {
-                    if item.is_dir {
-                        navigate_to(&tab_state, item.path);
-                        refresh_tab(
-                            &tab_state,
-                            &list,
-                            &ctx,
-                            &location_entry,
-                            &search_entry,
-                            &hidden_toggle,
-                            &sidebar_list,
-                        );
-                    } else {
-                        let _ = Command::new("xdg-open").arg(&item.path).spawn();
-                    }
-                }
-            }
-        });
-    }
-
-    // 2. Middle Click (Open in New Tab)
-    {
-        let notebook = notebook.clone();
-        let ctx = ctx.clone();
-        let window = window.clone();
-        let location_entry = location_entry.clone();
-        let search_entry = search_entry.clone();
-        let hidden_toggle = hidden_toggle.clone();
-        let sidebar_list = sidebar_list.clone();
-
-        let middle_click = gtk::GestureClick::new();
-        middle_click.set_button(2);
-        middle_click.connect_pressed(move |_, _, _, y| {
-            if let Some(row) = list.row_at_y(y as i32) {
-                let index = row.index();
-                if index >= 0 {
-                    if let Some((tab_state, _)) = get_active_widgets(&notebook) {
-                        let item = tab_state.borrow().items.get(index as usize).cloned();
-                        if let Some(item) = item {
-                            if item.is_dir {
-                                add_tab(
-                                    &notebook,
-                                    &ctx,
-                                    item.path,
-                                    &window,
-                                    &location_entry,
-                                    &search_entry,
-                                    &hidden_toggle,
-                                    &sidebar_list,
-                                );
-                            }
+        grid.connect_activate(move |_, pos| {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                if let Some(obj) = store.item(pos) {
+                    if let Some(item_obj) = obj.downcast_ref::<ItemObject>() {
+                        if item_obj.is_dir() {
+                            navigate_to(&tab_state, item_obj.get_path());
+                            refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                        } else {
+                            let _ = Command::new("xdg-open").arg(&item_obj.get_path()).spawn();
                         }
                     }
                 }
             }
         });
-        list.add_controller(middle_click);
     }
 
-    // 3. Drag Source
+    // 2. Drag Source (Native FileList)
     {
-        let state = tab_state.clone();
-        let list = list.clone();
+        let selection = selection.clone();
+        let store = store.clone();
+        
+        let drag_source = gtk::DragSource::builder()
+            .actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE)
+            .build();
 
-        let drag_source = gtk::DragSource::new();
         drag_source.connect_prepare(move |_source, _x, _y| {
-            let selected = {
-                let s = state.borrow();
-                file_view::selected_items(&list, &s.items)
-            };
-            if selected.is_empty() {
-                return None;
-            }
-            let payload = selected
+            let selected = grid_view::selected_items(&selection, &store);
+            if selected.is_empty() { return None; }
+
+            let files: Vec<gtk::gio::File> = selected
                 .iter()
-                .map(|item| item.path.display().to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let provider = gtk::gdk::ContentProvider::new_value(&payload);
-            Some((provider, gtk::gdk::DragAction::MOVE))
+                .map(|item| gtk::gio::File::for_path(item.get_path()))
+                .collect();
+                
+            let file_list = gtk::gdk::FileList::new(&files);
+            let provider = gtk::gdk::ContentProvider::for_value(&file_list.to_value());
+            Some(provider)
         });
-        list.add_controller(drag_source);
+        grid.add_controller(drag_source);
     }
 
-    // 4. Drop Target
+    // 3. Drop Target (Accepts from Nautilus/Dolphin)
     {
         let window_error = window.clone();
-        let state = tab_state.clone();
-        let list = list.clone();
+        let tab_state = tab_state.clone();
+        let store = store.clone();
         let ctx = ctx.clone();
         let location_entry = location_entry.clone();
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
 
-        let string_type = <String as glib::StaticType>::static_type();
-        let drop_target = gtk::DropTarget::new(
-            string_type,
-            gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY,
-        );
+        let drop_target = gtk::DropTarget::builder()
+            .type_(gtk::gdk::FileList::static_type())
+            .actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE)
+            .build();
 
-        drop_target.connect_drop(move |_target, value, _x, y| {
-            let Ok(payload) = value.get::<String>() else {
-                return false;
-            };
-            let sources: Vec<PathBuf> = payload.lines().map(PathBuf::from).collect();
-            if sources.is_empty() {
-                return false;
-            }
+        drop_target.connect_drop(move |target, value, _x, _y| {
+            let Ok(file_list) = value.get::<gtk::gdk::FileList>() else { return false; };
+            
+            // Automatically detects if Ctrl is held for COPY, otherwise MOVE
+            let action = target.current_action();
+            let is_copy = action == gtk::gdk::DragAction::COPY;
+            
+            let files = file_list.files();
+            if files.is_empty() { return false; }
+            
+            let destination_dir = tab_state.borrow().current.clone();
+            let mut last_error = None;
+            
+            for file in &files {
+                if let Some(path) = file.path() {
+                    if destination_dir.starts_with(&path) || path == destination_dir { continue; }
 
-            if let Some(row) = list.row_at_y(y as i32) {
-                let index = row.index();
-                if index >= 0 {
-                    let destination_item = {
-                        let s = state.borrow();
-                        s.items.get(index as usize).cloned()
+                    let file_name = path.file_name().unwrap_or_default().to_os_string();
+                    let dest = operations::unique_destination(&destination_dir.join(file_name));
+                    
+                    let result = if is_copy {
+                        operations::copy::copy_path(&path, &dest)
+                    } else {
+                        operations::move_op::move_path(&path, &dest)
                     };
-
-                    if let Some(destination_item) = destination_item {
-                        if destination_item.is_dir {
-                            let mut moved = 0;
-                            let mut skipped = 0;
-                            let mut failed = 0;
-                            let mut last_error = None;
-
-                            for source in &sources {
-                                if !source.exists()
-                                    || source.as_path() == destination_item.path.as_path()
-                                    || destination_item.path.starts_with(source)
-                                    || source.parent() == Some(destination_item.path.as_path())
-                                {
-                                    skipped += 1;
-                                    continue;
-                                }
-
-                                let file_name =
-                                    source.file_name().unwrap_or_default().to_os_string();
-                                let destination = operations::unique_destination(
-                                    &destination_item.path.join(file_name),
-                                );
-
-                                match operations::move_op::move_path(source, &destination) {
-                                    Ok(_) => moved += 1,
-                                    Err(err) => {
-                                        failed += 1;
-                                        last_error = Some(err);
-                                    }
-                                }
-                            }
-
-                            if failed == 0 && moved > 0 {
-                                // status update handled by refresh
-                            } else if moved == 0 {
-                                if let Some(err) = last_error {
-                                    dialogs::show_error(&window_error, &format!("Move failed: {err}"));
-                                }
-                            }
-
-                            refresh_tab(
-                                &state,
-                                &list,
-                                &ctx,
-                                &location_entry,
-                                &search_entry,
-                                &hidden_toggle,
-                                &sidebar_list,
-                            );
-                            return true;
-                        }
-                    }
+                    
+                    if let Err(err) = result { last_error = Some(err); }
                 }
             }
-            false
+            
+            if let Some(err) = last_error {
+                dialogs::show_error(&window_error, &format!("Drop failed: {err}"));
+            }
+            
+            refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+            true
         });
-        list.add_controller(drop_target);
+        grid.add_controller(drop_target);
     }
 
-    // 5. Right Click Context Menu
+    // 4. Right Click Context Menu
     {
         let window = window.clone();
         let notebook = notebook.clone();
         let ctx = ctx.clone();
+        let store = store.clone();
+        let selection = selection.clone();
         let location_entry = location_entry.clone();
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
@@ -383,51 +284,15 @@ fn add_tab(
         right_click.set_button(3);
 
         right_click.connect_pressed(move |_gesture, _n_press, x, y| {
-            if let Some(row) = list.row_at_y(y as i32) {
-                let index = row.index();
-                if index >= 0 {
-                    if !row.is_selected() {
-                        list.unselect_all();
-                        list.select_row(&row);
-                    }
-
-                    let items = {
-                        let s = tab_state.borrow();
-                        file_view::selected_items(&list, &s.items)
-                    };
-
-                    if !items.is_empty() {
-                        show_context_menu(
-                            &window,
-                            &notebook,
-                            &ctx,
-                            &list,
-                            &location_entry,
-                            &search_entry,
-                            &hidden_toggle,
-                            &sidebar_list,
-                            items,
-                            x,
-                            y,
-                        );
-                    }
-                }
+            let items = grid_view::selected_items(&selection, &store);
+            if !items.is_empty() {
+                show_context_menu(&window, &notebook, &ctx, &grid, &store, &selection, &location_entry, &search_entry, &hidden_toggle, &sidebar_list, items, x, y);
             }
         });
-        list.add_controller(right_click);
+        grid.add_controller(right_click);
     }
 
-    // Initial Refresh
-    refresh_tab(
-        &tab_state,
-        &list,
-        ctx,
-        location_entry,
-        search_entry,
-        hidden_toggle,
-        sidebar_list,
-    );
-
+    refresh_tab(&tab_state, &store, ctx, location_entry, search_entry, hidden_toggle, sidebar_list);
     notebook.set_current_page(Some(page_index));
 }
 
@@ -447,7 +312,6 @@ fn build_ui(app: &Application) {
 
     let ctx = Rc::new(RefCell::new(AppContext::new()));
 
-    // Toolbar Row 1
     let toolbar1 = GtkBox::new(Orientation::Horizontal, 6);
     let back_btn = Button::with_label("Back");
     let up_btn = Button::with_label("Up");
@@ -469,7 +333,6 @@ fn build_ui(app: &Application) {
     toolbar1.append(&location_entry);
     toolbar1.append(&search_entry);
 
-    // Toolbar Row 2
     let toolbar2 = GtkBox::new(Orientation::Horizontal, 6);
     let new_folder_btn = Button::with_label("New Folder");
     let new_file_btn = Button::with_label("New File");
@@ -489,7 +352,6 @@ fn build_ui(app: &Application) {
     toolbar2.append(&trash_btn);
     toolbar2.append(&hidden_toggle);
 
-    // Sidebar
     let sidebar_list = ListBox::new();
     sidebar_list.set_selection_mode(SelectionMode::Single);
     let sidebar_scrolled = ScrolledWindow::builder()
@@ -500,7 +362,6 @@ fn build_ui(app: &Application) {
     sidebar_scrolled.set_width_request(190);
     sidebar_scrolled.set_vexpand(true);
 
-    // Notebook (Tabs)
     let notebook = Notebook::new();
     notebook.set_show_tabs(true);
     notebook.set_show_border(false);
@@ -518,21 +379,10 @@ fn build_ui(app: &Application) {
 
     window.set_child(Some(&root));
 
-    // Create initial tab
-    add_tab(
-        &notebook,
-        &ctx,
-        locations::home_dir(),
-        &window,
-        &location_entry,
-        &search_entry,
-        &hidden_toggle,
-        &sidebar_list,
-    );
+    add_tab(&notebook, &ctx, locations::home_dir(), &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
 
     // --- Global Signals ---
 
-    // Tab Switch
     {
         let ctx = ctx.clone();
         let location_entry = location_entry.clone();
@@ -541,21 +391,12 @@ fn build_ui(app: &Application) {
         let sidebar_list = sidebar_list.clone();
 
         notebook.connect_switch_page(move |nb, _, _| {
-            if let Some((tab_state, list)) = get_active_widgets(nb) {
-                refresh_tab(
-                    &tab_state,
-                    &list,
-                    &ctx,
-                    &location_entry,
-                    &search_entry,
-                    &hidden_toggle,
-                    &sidebar_list,
-                );
+            if let Some((tab_state, _, store, _)) = get_active_widgets(nb) {
+                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
             }
         });
     }
 
-    // Search Entry
     {
         let notebook = notebook.clone();
         let ctx = ctx.clone();
@@ -566,24 +407,15 @@ fn build_ui(app: &Application) {
 
         search_entry.connect_search_changed(move |entry| {
             let query = entry.text().to_string();
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 if tab_state.borrow().search_query != query {
                     tab_state.borrow_mut().search_query = query;
-                    refresh_tab(
-                        &tab_state,
-                        &list,
-                        &ctx,
-                        &location_entry,
-                        &search_entry_clone,
-                        &hidden_toggle,
-                        &sidebar_list,
-                    );
+                    refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry_clone, &hidden_toggle, &sidebar_list);
                 }
             }
         });
     }
 
-    // Location Entry
     {
         let notebook = notebook.clone();
         let ctx = ctx.clone();
@@ -595,24 +427,15 @@ fn build_ui(app: &Application) {
         location_entry.connect_activate(move |entry| {
             let text = entry.text().to_string();
             let path = PathBuf::from(text);
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 if path.is_dir() {
                     navigate_to(&tab_state, path);
-                    refresh_tab(
-                        &tab_state,
-                        &list,
-                        &ctx,
-                        &location_entry_clone,
-                        &search_entry,
-                        &hidden_toggle,
-                        &sidebar_list,
-                    );
+                    refresh_tab(&tab_state, &store, &ctx, &location_entry_clone, &search_entry, &hidden_toggle, &sidebar_list);
                 }
             }
         });
     }
 
-    // Sidebar Click
     {
         let notebook = notebook.clone();
         let ctx = ctx.clone();
@@ -623,23 +446,14 @@ fn build_ui(app: &Application) {
 
         sidebar_list.connect_row_activated(move |_, row| {
             if let Some(path) = sidebar::resolve_click(row) {
-                if let Some((tab_state, list)) = get_active_widgets(&notebook) {
+                if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                     navigate_to(&tab_state, path);
-                    refresh_tab(
-                        &tab_state,
-                        &list,
-                        &ctx,
-                        &location_entry,
-                        &search_entry,
-                        &hidden_toggle,
-                        &sidebar_list,
-                    );
+                    refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
                 }
             }
         });
     }
 
-    // Sidebar Right Click
     {
         let window = window.clone();
         let notebook = notebook.clone();
@@ -657,18 +471,7 @@ fn build_ui(app: &Application) {
                 if let Some(name) = row.name() {
                     if let Some(path_str) = name.strip_prefix("bm:") {
                         let path = PathBuf::from(path_str);
-                        show_sidebar_context_menu(
-                            &window,
-                            &notebook,
-                            &ctx,
-                            &sidebar_list,
-                            &location_entry,
-                            &search_entry,
-                            &hidden_toggle,
-                            path,
-                            x,
-                            y,
-                        );
+                        show_sidebar_context_menu(&window, &notebook, &ctx, &sidebar_list, &location_entry, &search_entry, &hidden_toggle, path, x, y);
                     }
                 }
             }
@@ -686,9 +489,9 @@ fn build_ui(app: &Application) {
         let sidebar_list = sidebar_list.clone();
 
         back_btn.connect_clicked(move |_| {
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 go_back(&tab_state);
-                refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
             }
         });
     }
@@ -702,11 +505,11 @@ fn build_ui(app: &Application) {
         let sidebar_list = sidebar_list.clone();
 
         up_btn.connect_clicked(move |_| {
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 let current = tab_state.borrow().current.clone();
                 if let Some(parent) = current.parent() {
                     navigate_to(&tab_state, parent.to_path_buf());
-                    refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                    refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
                 }
             }
         });
@@ -721,9 +524,9 @@ fn build_ui(app: &Application) {
         let sidebar_list = sidebar_list.clone();
 
         home_btn.connect_clicked(move |_| {
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 navigate_to(&tab_state, locations::home_dir());
-                refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
             }
         });
     }
@@ -738,10 +541,10 @@ fn build_ui(app: &Application) {
 
         hidden_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 if tab_state.borrow().show_hidden != is_active {
                     tab_state.borrow_mut().show_hidden = is_active;
-                    refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                    refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
                 }
             }
         });
@@ -757,11 +560,11 @@ fn build_ui(app: &Application) {
         let sidebar_list = sidebar_list.clone();
 
         new_folder_btn.connect_clicked(move |_| {
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 dialogs::show_text_dialog(&window_parent, "New Folder", "New Folder", "Create", {
                     let window_error = window_parent.clone();
                     let tab_state = tab_state.clone();
-                    let list = list.clone();
+                    let store = store.clone();
                     let ctx = ctx.clone();
                     let location_entry = location_entry.clone();
                     let search_entry = search_entry.clone();
@@ -774,7 +577,7 @@ fn build_ui(app: &Application) {
                         if let Err(err) = operations::create::create_folder(&parent, &name) {
                             dialogs::show_error(&window_error, &format!("Could not create folder: {err}"));
                         }
-                        refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                        refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
                     }
                 });
             }
@@ -791,11 +594,11 @@ fn build_ui(app: &Application) {
         let sidebar_list = sidebar_list.clone();
 
         new_file_btn.connect_clicked(move |_| {
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 dialogs::show_text_dialog(&window_parent, "New File", "new-file.txt", "Create", {
                     let window_error = window_parent.clone();
                     let tab_state = tab_state.clone();
-                    let list = list.clone();
+                    let store = store.clone();
                     let ctx = ctx.clone();
                     let location_entry = location_entry.clone();
                     let search_entry = search_entry.clone();
@@ -808,7 +611,7 @@ fn build_ui(app: &Application) {
                         if let Err(err) = operations::create::create_file(&parent, &name) {
                             dialogs::show_error(&window_error, &format!("Could not create file: {err}"));
                         }
-                        refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                        refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
                     }
                 });
             }
@@ -825,21 +628,18 @@ fn build_ui(app: &Application) {
         let sidebar_list = sidebar_list.clone();
 
         rename_btn.connect_clicked(move |_| {
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
-                let selected = {
-                    let s = tab_state.borrow();
-                    file_view::selected_items(&list, &s.items)
-                };
+            if let Some((tab_state, _, store, selection)) = get_active_widgets(&notebook) {
+                let selected = grid_view::selected_items(&selection, &store);
                 if selected.len() != 1 { return; }
 
                 let item = selected[0].clone();
-                let source = item.path.clone();
-                let initial_name = item.name.clone();
+                let source = item.get_path();
+                let initial_name = item.name();
 
                 dialogs::show_text_dialog(&window_parent, "Rename", &initial_name, "Rename", {
                     let window_error = window_parent.clone();
                     let tab_state = tab_state.clone();
-                    let list = list.clone();
+                    let store = store.clone();
                     let ctx = ctx.clone();
                     let location_entry = location_entry.clone();
                     let search_entry = search_entry.clone();
@@ -851,7 +651,7 @@ fn build_ui(app: &Application) {
                         if let Err(err) = operations::rename::rename_path(&source, &name) {
                             dialogs::show_error(&window_error, &format!("Could not rename: {err}"));
                         }
-                        refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                        refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
                     }
                 });
             }
@@ -863,13 +663,10 @@ fn build_ui(app: &Application) {
         let ctx = ctx.clone();
 
         copy_btn.connect_clicked(move |_| {
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
-                let selected = {
-                    let s = tab_state.borrow();
-                    file_view::selected_items(&list, &s.items)
-                };
+            if let Some((_, _, store, selection)) = get_active_widgets(&notebook) {
+                let selected = grid_view::selected_items(&selection, &store);
                 if selected.is_empty() { return; }
-                let paths: Vec<PathBuf> = selected.iter().map(|item| item.path.clone()).collect();
+                let paths: Vec<PathBuf> = selected.iter().map(|item| item.get_path()).collect();
                 ctx.borrow_mut().pending = Some((PendingOp::Copy, paths));
             }
         });
@@ -880,13 +677,10 @@ fn build_ui(app: &Application) {
         let ctx = ctx.clone();
 
         move_btn.connect_clicked(move |_| {
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
-                let selected = {
-                    let s = tab_state.borrow();
-                    file_view::selected_items(&list, &s.items)
-                };
+            if let Some((_, _, store, selection)) = get_active_widgets(&notebook) {
+                let selected = grid_view::selected_items(&selection, &store);
                 if selected.is_empty() { return; }
-                let paths: Vec<PathBuf> = selected.iter().map(|item| item.path.clone()).collect();
+                let paths: Vec<PathBuf> = selected.iter().map(|item| item.get_path()).collect();
                 ctx.borrow_mut().pending = Some((PendingOp::Move, paths));
             }
         });
@@ -905,15 +699,12 @@ fn build_ui(app: &Application) {
             let pending = ctx.borrow_mut().pending.take();
             let Some((operation, sources)) = pending else { return; };
 
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 let destination_dir = tab_state.borrow().current.clone();
-                match operations::paste_pending(&destination_dir, operation, &sources) {
-                    Ok(_) => {}
-                    Err(err) => {
-                        dialogs::show_error(&window_error, &format!("Paste failed: {err}"));
-                    }
+                if let Err(err) = operations::paste_pending(&destination_dir, operation, &sources) {
+                    dialogs::show_error(&window_error, &format!("Paste failed: {err}"));
                 }
-                refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
             }
         });
     }
@@ -928,23 +719,20 @@ fn build_ui(app: &Application) {
         let sidebar_list = sidebar_list.clone();
 
         trash_btn.connect_clicked(move |_| {
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
-                let selected = {
-                    let s = tab_state.borrow();
-                    file_view::selected_items(&list, &s.items)
-                };
+            if let Some((tab_state, _, store, selection)) = get_active_widgets(&notebook) {
+                let selected = grid_view::selected_items(&selection, &store);
                 if selected.is_empty() { return; }
 
                 let mut last_error = None;
                 for item in &selected {
-                    if let Err(err) = operations::trash::delete(&item.path) {
+                    if let Err(err) = operations::trash::delete(&item.get_path()) {
                         last_error = Some(err);
                     }
                 }
                 if let Some(err) = last_error {
                     dialogs::show_error(&window_error, &format!("Could not move to trash: {err}"));
                 }
-                refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
             }
         });
     }
@@ -955,12 +743,10 @@ fn build_ui(app: &Application) {
         let sidebar_list = sidebar_list.clone();
 
         bookmark_btn.connect_clicked(move |_| {
-            if let Some((tab_state, _)) = get_active_widgets(&notebook) {
+            if let Some((tab_state, _, _, _)) = get_active_widgets(&notebook) {
                 let mut c = ctx.borrow_mut();
                 let current = tab_state.borrow().current.clone();
-                let name = current.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| current.to_string_lossy().to_string());
+                let name = current.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| current.to_string_lossy().to_string());
 
                 if c.bookmarks.iter().any(|b| b.path == current) { return; }
 
@@ -978,12 +764,14 @@ fn show_context_menu(
     window: &ApplicationWindow,
     notebook: &Notebook,
     ctx: &Rc<RefCell<AppContext>>,
-    list: &ListBox,
+    grid: &gtk::GridView,
+    store: &gio::ListStore,
+    selection: &gtk::MultiSelection,
     location_entry: &Entry,
     search_entry: &SearchEntry,
     hidden_toggle: &CheckButton,
     sidebar_list: &ListBox,
-    items: Vec<directory::Item>,
+    items: Vec<ItemObject>,
     x: f64,
     y: f64,
 ) {
@@ -995,7 +783,7 @@ fn show_context_menu(
     let popover = gtk::Popover::new();
     popover.set_has_arrow(true);
     popover.set_autohide(true);
-    popover.set_parent(list);
+    popover.set_parent(grid);
     popover.set_pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1));
 
     let menu_box = GtkBox::new(Orientation::Vertical, 6);
@@ -1013,7 +801,7 @@ fn show_context_menu(
     let properties_btn = Button::with_label("Properties");
 
     open_btn.set_sensitive(count == 1);
-    open_tab_btn.set_sensitive(count == 1 && single_item.as_ref().map_or(false, |i| i.is_dir));
+    open_tab_btn.set_sensitive(count == 1 && single_item.as_ref().map_or(false, |i| i.is_dir()));
     rename_btn.set_sensitive(count == 1);
     properties_btn.set_sensitive(count == 1);
 
@@ -1040,12 +828,12 @@ fn show_context_menu(
         open_btn.connect_clicked(move |_| {
             popover.popdown();
             let Some(item) = item.clone() else { return; };
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
-                if item.is_dir {
-                    navigate_to(&tab_state, item.path.clone());
-                    refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                if item.is_dir() {
+                    navigate_to(&tab_state, item.get_path());
+                    refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
                 } else {
-                    let _ = Command::new("xdg-open").arg(&item.path).spawn();
+                    let _ = Command::new("xdg-open").arg(&item.get_path()).spawn();
                 }
             }
         });
@@ -1064,8 +852,8 @@ fn show_context_menu(
         open_tab_btn.connect_clicked(move |_| {
             popover.popdown();
             let Some(item) = single_item.clone() else { return; };
-            if item.is_dir {
-                add_tab(&notebook, &ctx, item.path, &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+            if item.is_dir() {
+                add_tab(&notebook, &ctx, item.get_path(), &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
             }
         });
     }
@@ -1073,7 +861,7 @@ fn show_context_menu(
     {
         let popover = popover.clone();
         let ctx = ctx.clone();
-        let paths: Vec<PathBuf> = items.iter().map(|item| item.path.clone()).collect();
+        let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
 
         copy_btn.connect_clicked(move |_| {
             popover.popdown();
@@ -1084,7 +872,7 @@ fn show_context_menu(
     {
         let popover = popover.clone();
         let ctx = ctx.clone();
-        let paths: Vec<PathBuf> = items.iter().map(|item| item.path.clone()).collect();
+        let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
 
         move_btn.connect_clicked(move |_| {
             popover.popdown();
@@ -1106,8 +894,8 @@ fn show_context_menu(
         rename_btn.connect_clicked(move |_| {
             popover.popdown();
             let Some(item) = single_item.clone() else { return; };
-            let source = item.path.clone();
-            let initial_name = item.name.clone();
+            let source = item.get_path();
+            let initial_name = item.name();
 
             dialogs::show_text_dialog(&window, "Rename", &initial_name, "Rename", {
                 let window = window.clone();
@@ -1123,8 +911,8 @@ fn show_context_menu(
                     if let Err(err) = operations::rename::rename_path(&source, &name) {
                         dialogs::show_error(&window, &format!("Could not rename: {err}"));
                     }
-                    if let Some((tab_state, list)) = get_active_widgets(&notebook) {
-                        refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+                    if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                        refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
                     }
                 }
             });
@@ -1140,7 +928,7 @@ fn show_context_menu(
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
-        let paths: Vec<PathBuf> = items.iter().map(|item| item.path.clone()).collect();
+        let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
 
         trash_btn.connect_clicked(move |_| {
             popover.popdown();
@@ -1153,8 +941,8 @@ fn show_context_menu(
             if let Some(err) = last_error {
                 dialogs::show_error(&window, &format!("Could not move to trash: {err}"));
             }
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
-                refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
             }
         });
     }
@@ -1168,15 +956,15 @@ fn show_context_menu(
             popover.popdown();
             let Some(item) = item.clone() else { return; };
 
-            let size = if item.is_dir { "-".to_string() } else { metadata::format_size(item.metadata.size) };
-            let modified = metadata::format_modified(item.metadata.modified);
-            let permissions = item.metadata.permissions.clone();
-            let is_symlink = item.metadata.is_symlink;
-            let kind = if item.is_dir { "Folder" } else { "File" };
-
             let message = format!(
                 "Name: {}\nPath: {}\nType: {}\nSize: {}\nModified: {}\nPermissions: {}\nSymlink: {}",
-                item.name, item.path.display(), kind, size, modified, permissions, is_symlink
+                item.name(),
+                item.get_path().display(),
+                if item.is_dir() { "Folder" } else { "File" },
+                item.size_str(),
+                item.modified_str(),
+                item.permissions(),
+                item.is_symlink()
             );
 
             dialogs::show_info(&window, "Properties", &message);
@@ -1228,8 +1016,8 @@ fn show_sidebar_context_menu(
             bookmarks::remove(&mut ctx.borrow_mut().bookmarks, &path);
             sidebar::build(&sidebar_list, &ctx.borrow().bookmarks);
             
-            if let Some((tab_state, list)) = get_active_widgets(&notebook) {
-                refresh_tab(&tab_state, &list, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
             }
         });
     }
