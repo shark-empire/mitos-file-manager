@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use app::state::AppState;
 use filesystem::directory;
+use filesystem::metadata;
 use navigation::locations;
 use operations::PendingOp;
 use ui::dialogs;
@@ -140,6 +141,38 @@ fn build_ui(app: &Application) {
                 navigate_to(&state, &list, &location, &status, path);
             }
         });
+    }
+
+    {
+        let window = window.clone();
+        let state = state.clone();
+        let list = list.clone();
+        let location = location.clone();
+        let status = status.clone();
+
+        let right_click = gtk::GestureClick::new();
+        right_click.set_button(3);
+
+        right_click.connect_pressed(move |_gesture, _n_press, x, y| {
+            if let Some(row) = list.row_at_y(y as i32) {
+                let index = row.index();
+
+                if index >= 0 {
+                    list.select_row(&row);
+
+                    let item = {
+                        let s = state.borrow();
+                        s.items.get(index as usize).cloned()
+                    };
+
+                    if let Some(item) = item {
+                        show_context_menu(&window, &state, &list, &location, &status, item, x, y);
+                    }
+                }
+            }
+        });
+
+        list.add_controller(right_click);
     }
 
     {
@@ -532,4 +565,195 @@ fn refresh(state: &Rc<RefCell<AppState>>, list: &ListBox, location: &Entry, stat
     status.set_label(&format!("{} · {} items", current.display(), items.len()));
 
     s.items = items;
+}
+
+fn show_context_menu(
+    window: &ApplicationWindow,
+    state: &Rc<RefCell<AppState>>,
+    list: &ListBox,
+    location: &Entry,
+    status: &Label,
+    item: directory::Item,
+    x: f64,
+    y: f64,
+) {
+    let popover = gtk::Popover::new();
+    popover.set_has_arrow(true);
+    popover.set_autohide(true);
+    popover.set_parent(list);
+    popover.set_pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1));
+
+    let menu_box = GtkBox::new(Orientation::Vertical, 6);
+
+    menu_box.set_margin_top(6);
+    menu_box.set_margin_bottom(6);
+    menu_box.set_margin_start(6);
+    menu_box.set_margin_end(6);
+
+    let open_btn = Button::with_label("Open");
+    let copy_btn = Button::with_label("Copy");
+    let move_btn = Button::with_label("Move");
+    let rename_btn = Button::with_label("Rename");
+    let trash_btn = Button::with_label("Trash");
+    let properties_btn = Button::with_label("Properties");
+
+    menu_box.append(&open_btn);
+    menu_box.append(&copy_btn);
+    menu_box.append(&move_btn);
+    menu_box.append(&rename_btn);
+    menu_box.append(&trash_btn);
+    menu_box.append(&properties_btn);
+
+    popover.set_child(Some(&menu_box));
+
+    {
+        let popover = popover.clone();
+        let state = state.clone();
+        let list = list.clone();
+        let location = location.clone();
+        let status = status.clone();
+        let item = item.clone();
+
+        open_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            if item.is_dir {
+                navigate_to(&state, &list, &location, &status, item.path.clone());
+            } else {
+                let _ = Command::new("xdg-open").arg(&item.path).spawn();
+            }
+        });
+    }
+
+    {
+        let popover = popover.clone();
+        let state = state.clone();
+        let status = status.clone();
+        let item = item.clone();
+
+        copy_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            state.borrow_mut().pending = Some((PendingOp::Copy, item.path.clone()));
+            status.set_label(&format!(
+                "Copied “{}”. Navigate to destination and press Paste.",
+                item.name
+            ));
+        });
+    }
+
+    {
+        let popover = popover.clone();
+        let state = state.clone();
+        let status = status.clone();
+        let item = item.clone();
+
+        move_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            state.borrow_mut().pending = Some((PendingOp::Move, item.path.clone()));
+            status.set_label(&format!(
+                "Marked “{}” for move. Navigate to destination and press Paste.",
+                item.name
+            ));
+        });
+    }
+
+    {
+        let popover = popover.clone();
+        let window = window.clone();
+        let state = state.clone();
+        let list = list.clone();
+        let location = location.clone();
+        let status = status.clone();
+
+        let source = item.path.clone();
+        let initial_name = item.name.clone();
+
+        rename_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            dialogs::show_text_dialog(&window, "Rename", &initial_name, "Rename", {
+                let window = window.clone();
+                let state = state.clone();
+                let list = list.clone();
+                let location = location.clone();
+                let status = status.clone();
+
+                move |name| {
+                    if name.is_empty() {
+                        return;
+                    }
+
+                    if let Err(err) = operations::rename::rename_path(&source, &name) {
+                        dialogs::show_error(&window, &format!("Could not rename: {err}"));
+                    }
+
+                    refresh(&state, &list, &location, &status);
+                }
+            });
+        });
+    }
+
+    {
+        let popover = popover.clone();
+        let window = window.clone();
+        let state = state.clone();
+        let list = list.clone();
+        let location = location.clone();
+        let status = status.clone();
+        let item = item.clone();
+
+        trash_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            match operations::trash::delete(&item.path) {
+                Ok(_) => {
+                    status.set_label(&format!("Moved “{}” to trash.", item.name));
+                }
+                Err(err) => {
+                    dialogs::show_error(&window, &format!("Could not move to trash: {err}"));
+                }
+            }
+
+            refresh(&state, &list, &location, &status);
+        });
+    }
+
+    {
+        let popover = popover.clone();
+        let window = window.clone();
+        let item = item.clone();
+
+        properties_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            let size = if item.is_dir {
+                "-".to_string()
+            } else {
+                metadata::format_size(item.metadata.size)
+            };
+
+            let modified = metadata::format_modified(item.metadata.modified);
+            let permissions = item.metadata.permissions.clone();
+            let is_symlink = item.metadata.is_symlink;
+
+            let kind = if item.is_dir { "Folder" } else { "File" };
+
+            let message = format!(
+                "Name: {}\nPath: {}\nType: {}\nSize: {}\nModified: {}\nPermissions: {}\nSymlink: {}",
+                item.name,
+                item.path.display(),
+                kind,
+                size,
+                modified,
+                permissions,
+                is_symlink
+            );
+
+            dialogs::show_info(&window, "Properties", &message);
+        });
+    }
+
+    popover.popup();
 }
