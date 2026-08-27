@@ -6,10 +6,31 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink as symlink_unix;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum ConflictPolicy {
+    KeepBoth,
+    Replace,
+    SkipExisting,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum ConflictAction {
+    Skip,
+    Replace,
+    KeepBoth,
+}
+
+#[derive(Clone)]
+pub struct PasteTask {
+    pub source: PathBuf,
+    pub destination: PathBuf,
+    pub action: ConflictAction,
+}
 
 #[derive(Clone, Debug)]
 pub enum JobMessage {
@@ -31,11 +52,13 @@ pub enum JobMessage {
 
 pub struct JobHandle {
     pub cancel: Arc<AtomicBool>,
+    pub pause: Arc<AtomicBool>,
 }
 
 struct ProgressState {
     sender: glib::Sender<JobMessage>,
     cancel: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
     label: String,
     total: u64,
     processed: u64,
@@ -47,6 +70,7 @@ impl ProgressState {
     fn new(
         sender: glib::Sender<JobMessage>,
         cancel: Arc<AtomicBool>,
+        pause: Arc<AtomicBool>,
         label: String,
         total: u64,
         bytes: bool,
@@ -54,6 +78,7 @@ impl ProgressState {
         Self {
             sender,
             cancel,
+            pause,
             label,
             total,
             processed: 0,
@@ -88,14 +113,15 @@ impl ProgressState {
 
 pub fn start_paste_job(
     operation: PendingOp,
-    sources: Vec<PathBuf>,
-    destination: PathBuf,
+    tasks: Vec<PasteTask>,
     sender: glib::Sender<JobMessage>,
 ) -> JobHandle {
     let cancel = Arc::new(AtomicBool::new(false));
+    let pause = Arc::new(AtomicBool::new(false));
 
     let handle = JobHandle {
         cancel: cancel.clone(),
+        pause: pause.clone(),
     };
 
     let label = match operation {
@@ -105,7 +131,13 @@ pub fn start_paste_job(
 
     thread::spawn(move || {
         let result = (|| -> Result<usize, String> {
-            let total = calculate_size(&sources, &cancel).map_err(|err| err.to_string())?;
+            let active_tasks: Vec<PasteTask> = tasks
+                .into_iter()
+                .filter(|task| task.action != ConflictAction::Skip && task.source.exists())
+                .collect();
+
+            let total =
+                calculate_size_for_tasks(&active_tasks, &cancel).map_err(|err| err.to_string())?;
 
             let _ = sender.send(JobMessage::Started {
                 label: label.clone(),
@@ -116,6 +148,7 @@ pub fn start_paste_job(
             let mut state = ProgressState::new(
                 sender.clone(),
                 cancel.clone(),
+                pause.clone(),
                 label.clone(),
                 total,
                 true,
@@ -123,23 +156,38 @@ pub fn start_paste_job(
 
             let mut completed = 0;
 
-            for source in &sources {
-                check_cancel(&cancel).map_err(|err| err.to_string())?;
+            for task in &active_tasks {
+                check_cancel_and_pause(&state.cancel, &state.pause)
+                    .map_err(|err| err.to_string())?;
+
+                let source = &task.source;
 
                 if !source.exists() {
                     continue;
                 }
 
-                if destination.starts_with(source) || source.as_path() == destination.as_path() {
+                let destination_dir = task
+                    .destination
+                    .parent()
+                    .unwrap_or_else(|| Path::new("/"));
+
+                if destination_dir.starts_with(source) || source.as_path() == destination_dir {
                     continue;
                 }
 
-                if source.parent() == Some(destination.as_path()) {
+                if source.parent() == Some(destination_dir) {
                     continue;
                 }
 
-                let file_name = source.file_name().unwrap_or_default().to_os_string();
-                let target = unique_destination(&destination.join(file_name));
+                let mut target = task.destination.clone();
+
+                if task.action == ConflictAction::KeepBoth {
+                    target = unique_destination(&target);
+                }
+
+                if task.action == ConflictAction::Replace && target.exists() {
+                    remove_all_with_progress(&target, &mut state)?;
+                }
 
                 match operation {
                     PendingOp::Copy => copy_path_with_progress(source, &target, &mut state),
@@ -166,9 +214,11 @@ pub fn start_trash_job(
     sender: glib::Sender<JobMessage>,
 ) -> JobHandle {
     let cancel = Arc::new(AtomicBool::new(false));
+    let pause = Arc::new(AtomicBool::new(false));
 
     let handle = JobHandle {
         cancel: cancel.clone(),
+        pause: pause.clone(),
     };
 
     thread::spawn(move || {
@@ -184,6 +234,7 @@ pub fn start_trash_job(
             let mut state = ProgressState::new(
                 sender.clone(),
                 cancel.clone(),
+                pause.clone(),
                 "Moving to trash".to_string(),
                 total,
                 false,
@@ -192,7 +243,8 @@ pub fn start_trash_job(
             let mut completed = 0;
 
             for (index, path) in paths.iter().enumerate() {
-                check_cancel(&cancel).map_err(|err| err.to_string())?;
+                check_cancel_and_pause(&state.cancel, &state.pause)
+                    .map_err(|err| err.to_string())?;
 
                 crate::operations::trash::delete(path).map_err(|err| err.to_string())?;
 
@@ -209,30 +261,47 @@ pub fn start_trash_job(
     handle
 }
 
-fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
-    if cancel.load(Ordering::Relaxed) {
-        Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Cancelled",
-        ))
-    } else {
-        Ok(())
+fn check_cancel_and_pause(cancel: &AtomicBool, pause: &AtomicBool) -> io::Result<()> {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Cancelled",
+            ));
+        }
+
+        if !pause.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
-fn calculate_size(paths: &[PathBuf], cancel: &AtomicBool) -> io::Result<u64> {
+fn calculate_size_for_tasks(tasks: &[PasteTask], cancel: &AtomicBool) -> io::Result<u64> {
     let mut total = 0;
 
-    for path in paths {
-        check_cancel(cancel)?;
-        total += path_size(path, cancel)?;
+    for task in tasks {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Cancelled",
+            ));
+        }
+
+        total += path_size(&task.source, cancel)?;
     }
 
     Ok(total)
 }
 
 fn path_size(path: &Path, cancel: &AtomicBool) -> io::Result<u64> {
-    check_cancel(cancel)?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Cancelled",
+        ));
+    }
 
     let metadata = fs::symlink_metadata(path)?;
 
@@ -240,7 +309,12 @@ fn path_size(path: &Path, cancel: &AtomicBool) -> io::Result<u64> {
         let mut total = 0;
 
         for entry in fs::read_dir(path)? {
-            check_cancel(cancel)?;
+            if cancel.load(Ordering::Relaxed) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Cancelled",
+                ));
+            }
 
             let entry = entry?;
             total += path_size(&entry.path(), cancel)?;
@@ -257,7 +331,7 @@ fn copy_path_with_progress(
     destination: &Path,
     state: &mut ProgressState,
 ) -> io::Result<()> {
-    check_cancel(&state.cancel)?;
+    check_cancel_and_pause(&state.cancel, &state.pause)?;
 
     let metadata = fs::symlink_metadata(source)?;
 
@@ -275,12 +349,12 @@ fn copy_dir_with_progress(
     destination: &Path,
     state: &mut ProgressState,
 ) -> io::Result<()> {
-    check_cancel(&state.cancel)?;
+    check_cancel_and_pause(&state.cancel, &state.pause)?;
 
     fs::create_dir_all(destination)?;
 
     for entry in fs::read_dir(source)? {
-        check_cancel(&state.cancel)?;
+        check_cancel_and_pause(&state.cancel, &state.pause)?;
 
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -335,7 +409,7 @@ fn copy_file_chunks(
     destination: &Path,
     state: &mut ProgressState,
 ) -> io::Result<()> {
-    check_cancel(&state.cancel)?;
+    check_cancel_and_pause(&state.cancel, &state.pause)?;
 
     let mut reader = fs::File::open(source)?;
     let mut writer = fs::File::create(destination)?;
@@ -343,7 +417,7 @@ fn copy_file_chunks(
     let mut buffer = [0u8; 64 * 1024];
 
     loop {
-        check_cancel(&state.cancel)?;
+        check_cancel_and_pause(&state.cancel, &state.pause)?;
 
         let read = reader.read(&mut buffer)?;
 
@@ -369,7 +443,7 @@ fn move_path_with_progress(
     destination: &Path,
     state: &mut ProgressState,
 ) -> io::Result<()> {
-    check_cancel(&state.cancel)?;
+    check_cancel_and_pause(&state.cancel, &state.pause)?;
 
     match fs::rename(source, destination) {
         Ok(_) => Ok(()),
@@ -388,13 +462,13 @@ fn move_path_with_progress(
 }
 
 fn remove_all_with_progress(path: &Path, state: &mut ProgressState) -> io::Result<()> {
-    check_cancel(&state.cancel)?;
+    check_cancel_and_pause(&state.cancel, &state.pause)?;
 
     let metadata = fs::symlink_metadata(path)?;
 
     if metadata.is_dir() {
         for entry in fs::read_dir(path)? {
-            check_cancel(&state.cancel)?;
+            check_cancel_and_pause(&state.cancel, &state.pause)?;
 
             let entry = entry?;
             remove_all_with_progress(&entry.path(), state)?;
