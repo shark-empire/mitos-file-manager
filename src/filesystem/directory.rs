@@ -1,3 +1,4 @@
+use crate::filesystem::metadata::{self, FileMetadata};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -6,6 +7,7 @@ pub struct Item {
     pub path: PathBuf,
     pub name: String,
     pub is_dir: bool,
+    pub metadata: FileMetadata,
 }
 
 pub fn read_items(path: &Path, show_hidden: bool) -> Vec<Item> {
@@ -21,8 +23,14 @@ pub fn read_items(path: &Path, show_hidden: bool) -> Vec<Item> {
 
             let path = entry.path();
             let is_dir = path.is_dir();
+            let metadata = metadata::for_path(&path);
 
-            items.push(Item { path, name, is_dir });
+            items.push(Item {
+                path,
+                name,
+                is_dir,
+                metadata,
+            });
         }
     }
 
