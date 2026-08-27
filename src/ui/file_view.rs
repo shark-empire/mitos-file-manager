@@ -38,13 +38,26 @@ pub fn render(list: &ListBox, items: &[Item]) {
     }
 }
 
-pub fn selected_item(list: &ListBox, items: &[Item]) -> Option<Item> {
-    let row = list.selected_row()?;
-    let index = row.index();
+pub fn selected_items(list: &ListBox, items: &[Item]) -> Vec<Item> {
+    let mut selected: Vec<(i32, Item)> = Vec::new();
 
-    if index < 0 {
-        return None;
+    for row in list.selected_rows() {
+        let index = row.index();
+
+        if index < 0 {
+            continue;
+        }
+
+        if let Some(item) = items.get(index as usize) {
+            selected.push((index, item.clone()));
+        }
     }
 
-    items.get(index as usize).cloned()
+    selected.sort_by_key(|(index, _)| *index);
+
+    selected.into_iter().map(|(_, item)| item).collect()
+}
+
+pub fn selected_item(list: &ListBox, items: &[Item]) -> Option<Item> {
+    selected_items(list, items).into_iter().next()
 }
