@@ -4,6 +4,7 @@ pub mod move_op;
 pub mod rename;
 pub mod trash;
 pub mod jobs;
+pub mod archive;
 
 use std::io;
 use std::path::{Path, PathBuf};
