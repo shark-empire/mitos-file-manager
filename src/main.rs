@@ -32,6 +32,37 @@ use ui::dialogs;
 use ui::grid_view;
 use ui::item_object::ItemObject;
 use ui::sidebar;
+use std::collections::VecDeque;
+
+enum JobRequest {
+    Paste {
+        operation: PendingOp,
+        tasks: Vec<operations::jobs::PasteTask>,
+    },
+    Trash {
+        paths: Vec<PathBuf>,
+    },
+}
+
+struct JobQueueState {
+    pending: VecDeque<JobRequest>,
+    running: bool,
+}
+
+type JobQueue = Rc<RefCell<JobQueueState>>;
+
+#[derive(Clone)]
+struct JobUi {
+    window: ApplicationWindow,
+    notebook: Notebook,
+    ctx: Rc<RefCell<AppContext>>,
+    location_entry: Entry,
+    search_entry: SearchEntry,
+    hidden_toggle: CheckButton,
+    sidebar_list: ListBox,
+    watcher_manager: Rc<RefCell<filesystem::watcher::WatcherManager>>,
+}
+
 
 fn main() {
     let app = Application::builder()
@@ -93,39 +124,28 @@ fn start_paste_job_ui(
         return;
     }
 
-    let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
-    let handle = operations::jobs::start_paste_job(operation, sources, destination, sender);
+    let tasks = prepare_paste_tasks(window, sources, destination);
 
-    let window_error = window.clone();
-    let notebook = notebook.clone();
-    let ctx = ctx.clone();
-    let location_entry = location_entry.clone();
-    let search_entry = search_entry.clone();
-    let hidden_toggle = hidden_toggle.clone();
-    let sidebar_list = sidebar_list.clone();
-    let watcher_manager = watcher_manager.clone();
+    if tasks.is_empty() {
+        return;
+    }
 
-    ui::progress::show_progress_dialog(window, "File Operation", handle, receiver, move |result| {
-        if let Err(err) = result {
-            if !err.contains("Cancelled") {
-                dialogs::show_error(&window_error, &format!("File operation failed: {err}"));
-            }
-        }
+    let Some(queue) = location_entry.data::<JobQueue>("job-queue").map(|q| q.clone()) else {
+        return;
+    };
 
-        if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-            refresh_tab(
-                &tab_state,
-                &store,
-                &ctx,
-                &location_entry,
-                &search_entry,
-                &hidden_toggle,
-                &sidebar_list,
-            );
+    let ui = JobUi {
+        window: window.clone(),
+        notebook: notebook.clone(),
+        ctx: ctx.clone(),
+        location_entry: location_entry.clone(),
+        search_entry: search_entry.clone(),
+        hidden_toggle: hidden_toggle.clone(),
+        sidebar_list: sidebar_list.clone(),
+        watcher_manager: watcher_manager.clone(),
+    };
 
-            update_watcher(&notebook, &watcher_manager);
-        }
-    });
+    enqueue_job(&queue, JobRequest::Paste { operation, tasks }, ui);
 }
 
 fn start_trash_job_ui(
@@ -143,22 +163,149 @@ fn start_trash_job_ui(
         return;
     }
 
+    let Some(queue) = location_entry.data::<JobQueue>("job-queue").map(|q| q.clone()) else {
+        return;
+    };
+
+    let ui = JobUi {
+        window: window.clone(),
+        notebook: notebook.clone(),
+        ctx: ctx.clone(),
+        location_entry: location_entry.clone(),
+        search_entry: search_entry.clone(),
+        hidden_toggle: hidden_toggle.clone(),
+        sidebar_list: sidebar_list.clone(),
+        watcher_manager: watcher_manager.clone(),
+    };
+
+    enqueue_job(&queue, JobRequest::Trash { paths }, ui);
+}
+
+fn prepare_paste_tasks(
+    window: &ApplicationWindow,
+    sources: Vec<PathBuf>,
+    destination: PathBuf,
+) -> Vec<operations::jobs::PasteTask> {
+    use operations::jobs::{ConflictAction, ConflictPolicy, PasteTask};
+
+    let mut has_conflict = false;
+
+    for source in &sources {
+        let Some(file_name) = source.file_name() else {
+            continue;
+        };
+
+        if destination.join(file_name).exists() {
+            has_conflict = true;
+            break;
+        }
+    }
+
+    let policy = if has_conflict {
+        dialogs::choose_conflict_policy(window)
+    } else {
+        Some(ConflictPolicy::KeepBoth)
+    };
+
+    let Some(policy) = policy else {
+        return Vec::new();
+    };
+
+    let mut tasks = Vec::new();
+
+    for source in sources {
+        let Some(file_name) = source.file_name() else {
+            continue;
+        };
+
+        let base = destination.join(file_name);
+        let exists = base.exists();
+
+        let action = match policy {
+            ConflictPolicy::KeepBoth => ConflictAction::KeepBoth,
+            ConflictPolicy::Replace => ConflictAction::Replace,
+            ConflictPolicy::SkipExisting => {
+                if exists {
+                    ConflictAction::Skip
+                } else {
+                    ConflictAction::KeepBoth
+                }
+            }
+        };
+
+        if action != ConflictAction::Skip {
+            tasks.push(PasteTask {
+                source,
+                destination: base,
+                action,
+            });
+        }
+    }
+
+    tasks
+}
+
+fn enqueue_job(queue: &JobQueue, request: JobRequest, ui: JobUi) {
+    let (start_now, pending_count) = {
+        let mut q = queue.borrow_mut();
+        q.pending.push_back(request);
+
+        if !q.running {
+            q.running = true;
+            (true, q.pending.len())
+        } else {
+            (false, q.pending.len())
+        }
+    };
+
+    if start_now {
+        start_next_job(queue, ui);
+    } else {
+        if let Some(status_label) = ui.location_entry.data::<Label>("status-label") {
+            status_label.set_label(&format!("{pending_count} job(s) queued"));
+        }
+    }
+}
+
+fn start_next_job(queue: &JobQueue, ui: JobUi) {
+    let request = {
+        queue.borrow_mut().pending.pop_front()
+    };
+
+    let Some(request) = request else {
+        queue.borrow_mut().running = false;
+        return;
+    };
+
     let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
-    let handle = operations::jobs::start_trash_job(paths, sender);
 
-    let window_error = window.clone();
-    let notebook = notebook.clone();
-    let ctx = ctx.clone();
-    let location_entry = location_entry.clone();
-    let search_entry = search_entry.clone();
-    let hidden_toggle = hidden_toggle.clone();
-    let sidebar_list = sidebar_list.clone();
-    let watcher_manager = watcher_manager.clone();
+    let (handle, title) = match request {
+        JobRequest::Paste { operation, tasks } => {
+            let handle = operations::jobs::start_paste_job(operation, tasks, sender);
+            (handle, "File Operation")
+        }
+        JobRequest::Trash { paths } => {
+            let handle = operations::jobs::start_trash_job(paths, sender);
+            (handle, "Trash")
+        }
+    };
 
-    ui::progress::show_progress_dialog(window, "Trash", handle, receiver, move |result| {
+    let queue_for_done = queue.clone();
+    let ui_for_done = ui.clone();
+
+    let window_error = ui.window.clone();
+    let notebook = ui.notebook.clone();
+    let ctx = ui.ctx.clone();
+    let location_entry = ui.location_entry.clone();
+    let search_entry = ui.search_entry.clone();
+    let hidden_toggle = ui.hidden_toggle.clone();
+    let sidebar_list = ui.sidebar_list.clone();
+    let watcher_manager = ui.watcher_manager.clone();
+
+    ui::progress::show_progress_dialog(&ui.window, title, handle, receiver, move |result| {
         if let Err(err) = result {
             if !err.contains("Cancelled") {
-                dialogs::show_error(&window_error, &format!("Trash operation failed: {err}"));
+                dialogs::show_error(&window_error, &format!("Job failed: {err}"));
             }
         }
 
@@ -175,6 +322,8 @@ fn start_trash_job_ui(
 
             update_watcher(&notebook, &watcher_manager);
         }
+
+        start_next_job(&queue_for_done, ui_for_done);
     });
 }
 
@@ -563,6 +712,12 @@ fn build_ui(app: &Application) {
     let selection_label = Label::new(Some(""));
     selection_label.set_halign(gtk::Align::End);
 
+   let job_queue: JobQueue = Rc::new(RefCell::new(JobQueueState {
+        pending: VecDeque::new(),
+        running: false,
+    }));
+
+    
     status_bar.append(&status_label);
     status_bar.append(&selection_label);
 
@@ -576,8 +731,11 @@ fn build_ui(app: &Application) {
     location_entry.set_data("location-stack", location_stack.clone());
     location_entry.set_data("status-label", status_label.clone());
     location_entry.set_data("selection-label", selection_label.clone());
+    location_entry.set_data("job-queue", job_queue.clone());
+
 
     window.set_child(Some(&root));
+
 
 
     add_tab(&notebook, &ctx, locations::home_dir(), &window, &location_entry, &search_entry, &hidden_toggle, &sidebar_list, &watcher_manager);
