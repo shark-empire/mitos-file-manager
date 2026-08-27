@@ -390,34 +390,53 @@ fn add_tab(
             .build();
 
         drop_target.connect_drop(move |target, value, _x, _y| {
-            let Ok(file_list) = value.get::<gtk::gdk::FileList>() else { return false; };
+            let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
+                return false;
+            };
+
             let action = target.current_action();
             let is_copy = action == gtk::gdk::DragAction::COPY;
+
             let files = file_list.files();
-            if files.is_empty() { return false; }
-            
-            let destination_dir = tab_state.borrow().current.clone();
-            let mut last_error = None;
-            
-            for file in &files {
-                if let Some(path) = file.path() {
-                    if destination_dir.starts_with(&path) || path == destination_dir { continue; }
-                    let file_name = path.file_name().unwrap_or_default().to_os_string();
-                    let dest = operations::unique_destination(&destination_dir.join(file_name));
-                    let result = if is_copy {
-                        operations::copy::copy_path(&path, &dest)
-                    } else {
-                        operations::move_op::move_path(&path, &dest)
-                    };
-                    if let Err(err) = result { last_error = Some(err); }
-                }
+
+            if files.is_empty() {
+                return false;
             }
-            
-            if let Some(err) = last_error { dialogs::show_error(&window_error, &format!("Drop failed: {err}")); }
-            refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
-            update_watcher(&notebook, &watcher_manager);
+
+            let destination_dir = tab_state.borrow().current.clone();
+
+            let sources: Vec<PathBuf> = files
+                .iter()
+                .filter_map(|file| file.path().map(PathBuf::from))
+                .collect();
+
+            if sources.is_empty() {
+                return false;
+            }
+
+            let operation = if is_copy {
+                PendingOp::Copy
+            } else {
+                PendingOp::Move
+            };
+
+            start_paste_job_ui(
+                &window_error,
+                &notebook,
+                &ctx,
+                &location_entry,
+                &search_entry,
+                &hidden_toggle,
+                &sidebar_list,
+                &watcher_manager,
+                operation,
+                sources,
+                destination_dir,
+            );
+
             true
         });
+
         grid.add_controller(drop_target);
     }
 
