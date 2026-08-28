@@ -8,3 +8,4 @@ pub mod progress;
 pub mod trash_view;
 pub mod batch_rename;
 pub mod settings;
+pub mod preview;
