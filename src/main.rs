@@ -12,6 +12,7 @@ mod portal;
 
 use gtk::prelude::*;
 use gtk::gio;
+use gtk::gdk;
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Entry, Label, ListBox,
     Notebook, Orientation, ScrolledWindow, SearchEntry, SelectionMode,
@@ -817,6 +818,9 @@ fn build_ui(app: &Application) {
     
     let theme_mode = config::settings::theme_mode();
     ui::theme::apply_theme(&window.display(), theme_mode);
+    
+    let portal_rx = portal::service::start();
+
 
 
     // Setup Inotify Channel
@@ -1724,7 +1728,14 @@ fn build_ui(app: &Application) {
 
                         update_watcher(&notebook, &watcher_manager);
                     }
+
+                    // Reapply theme if changed
+                    let theme_mode = config::settings::theme_mode();
+                    if let Some(display) = gdk::Display::default() {
+                        ui::theme::apply_theme(&display, theme_mode);
+                    }
                 }
+
             });
 
             ui::settings::show(&window, apply_changes);
@@ -1818,6 +1829,83 @@ fn build_ui(app: &Application) {
             rebuild_vol_rem(None);
         });
     }
+    
+        {
+        let window = window.clone();
+
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            while let Ok(request) = portal_rx.try_recv() {
+                match request {
+                    portal::service::PortalRequest::OpenFile { title, response_tx } => {
+                        let dialog = gtk::FileDialog::builder()
+                            .title(&title)
+                            .modal(true)
+                            .build();
+
+                        let response_tx = response_tx.clone();
+
+                        dialog.open(Some(&window), None, move |result| {
+                            match result {
+                                Ok(file) => {
+                                    let path = file.path().map(|p| p.display().to_string()).unwrap_or_default();
+                                    let _ = response_tx.send(portal::service::PortalResponse::Selected(vec![path]));
+                                }
+                                Err(_) => {
+                                    let _ = response_tx.send(portal::service::PortalResponse::Cancelled);
+                                }
+                            }
+                        });
+                    }
+
+                    portal::service::PortalRequest::SaveFile { title, default_name, response_tx } => {
+                        let dialog = gtk::FileDialog::builder()
+                            .title(&title)
+                            .initial_name(&default_name)
+                            .modal(true)
+                            .build();
+
+                        let response_tx = response_tx.clone();
+
+                        dialog.save(Some(&window), None, move |result| {
+                            match result {
+                                Ok(file) => {
+                                    let path = file.path().map(|p| p.display().to_string()).unwrap_or_default();
+                                    let _ = response_tx.send(portal::service::PortalResponse::Selected(vec![path]));
+                                }
+                                Err(_) => {
+                                    let _ = response_tx.send(portal::service::PortalResponse::Cancelled);
+                                }
+                            }
+                        });
+                    }
+
+                    portal::service::PortalRequest::OpenFolder { title, response_tx } => {
+                        let dialog = gtk::FileDialog::builder()
+                            .title(&title)
+                            .modal(true)
+                            .build();
+
+                        let response_tx = response_tx.clone();
+
+                        dialog.select_folder(Some(&window), None, move |result| {
+                            match result {
+                                Ok(file) => {
+                                    let path = file.path().map(|p| p.display().to_string()).unwrap_or_default();
+                                    let _ = response_tx.send(portal::service::PortalResponse::Selected(vec![path]));
+                                }
+                                Err(_) => {
+                                    let _ = response_tx.send(portal::service::PortalResponse::Cancelled);
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+
+            glib::ControlFlow::Continue
+        });
+    }
+
 
     window.present();
 }
