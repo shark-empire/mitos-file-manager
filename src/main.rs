@@ -1821,6 +1821,7 @@ fn show_context_menu(
 
     let open_btn = Button::with_label("Open");
     let open_tab_btn = Button::with_label("Open in New Tab");
+    let open_with_btn = gtk::MenuButton::with_label("Open With");
     let compress_btn = Button::with_label("Compress to ZIP");
     let extract_btn = Button::with_label("Extract Here");
     let copy_btn = Button::with_label("Copy");
@@ -1833,6 +1834,13 @@ fn show_context_menu(
 
     open_btn.set_sensitive(count == 1);
     open_tab_btn.set_sensitive(count == 1 && single_item.as_ref().map_or(false, |i| i.is_dir()));
+    open_with_btn.set_sensitive(
+        count == 1
+            && single_item
+                .as_ref()
+                .map_or(false, |i| !i.is_dir()),
+    );
+
     compress_btn.set_sensitive(!items.is_empty());
     extract_btn.set_sensitive(
         count == 1
@@ -1847,6 +1855,7 @@ fn show_context_menu(
 
     menu_box.append(&open_btn);
     menu_box.append(&open_tab_btn);
+    menu_box.append(&open_with_btn);
     menu_box.append(&compress_btn);
     menu_box.append(&extract_btn);
     menu_box.append(&copy_btn);
@@ -1877,10 +1886,20 @@ fn show_context_menu(
                 if item.is_dir() {
                     navigate_to(&tab_state, item.get_path());
                     refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
-                    update_watcher(&notebook, &watcher_manager);
                 } else {
-                    let _ = Command::new("xdg-open").arg(&item.get_path()).spawn();
+                    let path = item.get_path();
+                    let mime = item.mime_type();
+
+                    if let Some(app) = crate::mime::applications::default_app_for_mime(&mime) {
+                        if let Err(err) = crate::mime::applications::launch_app_with_file(&app, &path) {
+                            crate::ui::dialogs::show_error(&window, &format!("Failed to open: {}", err));
+                        }
+                    } else {
+                        // Fallback to xdg-open
+                        let _ = Command::new("xdg-open").arg(&path).spawn();
+                    }
                 }
+
             }
         });
     }
@@ -1904,6 +1923,90 @@ fn show_context_menu(
             }
         });
     }
+
+        {
+        let popover = popover.clone();
+        let window = window.clone();
+        let single_item = single_item.clone();
+
+        open_with_btn.connect_clicked(move |_| {
+            let Some(item) = single_item.clone() else {
+                return;
+            };
+
+            let path = item.get_path();
+            let mime = item.mime_type();
+
+            let apps = crate::mime::applications::apps_for_mime(&mime);
+            let display_apps = crate::mime::applications::app_display_names(&apps);
+
+            if display_apps.is_empty() {
+                crate::ui::dialogs::show_error(
+                    &window,
+                    &format!("No applications found for MIME type: {}", mime),
+                );
+                return;
+            }
+
+            // Build a submenu popover
+            let sub_popover = gtk::Popover::new();
+            sub_popover.set_has_arrow(true);
+            sub_popover.set_autohide(true);
+            sub_popover.set_parent(&open_with_btn);
+
+            let sub_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            sub_box.set_margin_top(4);
+            sub_box.set_margin_bottom(4);
+            sub_box.set_margin_start(4);
+            sub_box.set_margin_end(4);
+
+            for (name, app_info) in &display_apps {
+                let btn = gtk::Button::with_label(name);
+                btn.set_has_frame(false);
+                btn.set_halign(gtk::Align::Fill);
+
+                let app_info = app_info.clone();
+                let path = path.clone();
+                let sub_popover = sub_popover.clone();
+                let window = window.clone();
+
+                btn.connect_clicked(move |_| {
+                    sub_popover.popdown();
+
+                    if let Err(err) = crate::mime::applications::launch_app_with_file(&app_info, &path) {
+                        crate::ui::dialogs::show_error(&window, &format!("Failed to open: {}", err));
+                    }
+                });
+
+                sub_box.append(&btn);
+            }
+
+            // Add separator
+            let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+            sub_box.append(&sep);
+
+            // Add "Set as Default" button
+            let default_btn = gtk::Button::with_label("Set Default App...");
+            default_btn.set_has_frame(false);
+
+            let display_apps_clone = display_apps.clone();
+            let mime_clone = mime.clone();
+            let window_clone = window.clone();
+
+            default_btn.connect_clicked(move |_| {
+                sub_popover.popdown();
+
+                // Show a simple dialog to pick default
+                show_default_app_dialog(&window_clone, &display_apps_clone, &mime_clone);
+            });
+
+            sub_box.append(&default_btn);
+
+            sub_popover.set_child(Some(&sub_box));
+            sub_popover.popup();
+        });
+    }
+
 
         {
         let popover = popover.clone();
@@ -2211,6 +2314,170 @@ fn show_sidebar_context_menu(
 
     popover.popup();
 }
+
+fn show_default_app_dialog(
+    parent: &ApplicationWindow,
+    apps: &[(String, gtk::gio::AppInfo)],
+    mime: &str,
+) {
+    let dialog = gtk::Dialog::builder()
+        .title("Set Default Application")
+        .transient_for(parent)
+        .modal(true)
+        .build();
+
+    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+
+    let content = dialog.content_area();
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+
+    let label = gtk::Label::new(Some(&format!(
+        "Choose default application for: {}",
+        mime
+    )));
+    label.set_wrap(true);
+    content.append(&label);
+
+    let list_box = gtk::ListBox::new();
+    list_box.set_selection_mode(gtk::SelectionMode::Single);
+
+    for (name, _) in apps {
+        let row = gtk::ListBoxRow::new();
+        let row_label = gtk::Label::new(Some(name));
+        row_label.set_halign(gtk::Align::Start);
+        row.set_child(Some(&row_label));
+        list_box.append(&row);
+    }
+
+    let scrolled = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .build();
+
+    scrolled.set_child(Some(&list_box));
+    scrolled.set_min_content_height(200);
+
+    content.append(&scrolled);
+
+    let apps = apps.to_vec();
+    let mime = mime.to_string();
+
+    dialog.connect_response(move |dialog, response| {
+        if response == gtk::ResponseType::Cancel {
+            dialog.close();
+            return;
+        }
+
+        // We need to handle the selection
+        // For simplicity, we'll add an "OK" button approach
+        dialog.close();
+    });
+
+    // Replace the simple response with a proper selection dialog
+    dialog.close();
+
+    // Simpler approach: show a popover-style selection
+    show_default_app_picker(parent, apps, &mime);
+}
+
+fn show_default_app_picker(
+    parent: &ApplicationWindow,
+    apps: Vec<(String, gtk::gio::AppInfo)>,
+    mime: &str,
+) {
+    let window = gtk::Window::builder()
+        .title("Set Default Application")
+        .transient_for(parent)
+        .default_width(400)
+        .default_height(350)
+        .build();
+
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    root.set_margin_top(12);
+    root.set_margin_bottom(12);
+    root.set_margin_start(12);
+    root.set_margin_end(12);
+
+    let label = gtk::Label::new(Some(&format!("MIME type: {}", mime)));
+    label.set_halign(gtk::Align::Start);
+
+    let list_box = gtk::ListBox::new();
+    list_box.set_selection_mode(gtk::SelectionMode::Single);
+
+    for (name, _) in &apps {
+        let row = gtk::ListBoxRow::new();
+        let row_label = gtk::Label::new(Some(name));
+        row_label.set_halign(gtk::Align::Start);
+        row.set_child(Some(&row_label));
+        list_box.append(&row);
+    }
+
+    let scrolled = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .build();
+
+    scrolled.set_child(Some(&list_box));
+    scrolled.set_vexpand(true);
+
+    let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+
+    let cancel_btn = gtk::Button::with_label("Cancel");
+    let ok_btn = gtk::Button::with_label("Set as Default");
+
+    button_box.append(&cancel_btn);
+    button_box.append(&ok_btn);
+
+    root.append(&label);
+    root.append(&scrolled);
+    root.append(&button_box);
+
+    window.set_child(Some(&root));
+
+    {
+        let window = window.clone();
+        cancel_btn.connect_clicked(move |_| {
+            window.close();
+        });
+    }
+
+    {
+        let window = window.clone();
+        let list_box = list_box.clone();
+        let apps = apps.clone();
+        let mime = mime.to_string();
+
+        ok_btn.connect_clicked(move |_| {
+            if let Some(row) = list_box.selected_row() {
+                let index = row.index();
+
+                if index >= 0 && (index as usize) < apps.len() {
+                    let (_, app_info) = &apps[index as usize];
+
+                    match crate::mime::applications::set_default_app(app_info, &mime) {
+                        Ok(()) => {
+                            // Success
+                        }
+                        Err(err) => {
+                            crate::ui::dialogs::show_error(
+                                &window,
+                                &format!("Failed to set default: {}", err),
+                            );
+                        }
+                    }
+                }
+            }
+
+            window.close();
+        });
+    }
+
+    window.present();
+}
+
 
 fn filesystem_free_string(path: &std::path::Path) -> String {
     let file = gio::File::for_path(path);
