@@ -801,6 +801,8 @@ fn build_ui(app: &Application) {
 
     let ctx = Rc::new(RefCell::new(AppContext::new()));
 
+    config::settings::load();
+
     // Setup Inotify Channel
     let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
     let watcher_manager = Rc::new(RefCell::new(filesystem::watcher::WatcherManager::new(sender)));
@@ -839,6 +841,8 @@ fn build_ui(app: &Application) {
     let trash_btn = Button::with_label("Trash");
     let open_trash_btn = Button::with_label("Open Trash");
     let hidden_toggle = CheckButton::with_label("Hidden");
+    let settings_btn = Button::with_label("Settings");
+
 
 
     toolbar2.append(&new_folder_btn);
@@ -849,7 +853,9 @@ fn build_ui(app: &Application) {
     toolbar2.append(&paste_btn);
     toolbar2.append(&trash_btn);
     toolbar2.append(&open_trash_btn);
+    toolbar2.append(&settings_btn);
     toolbar2.append(&hidden_toggle);
+
 
 
     let sidebar_list = ListBox::new();
@@ -1354,14 +1360,28 @@ fn build_ui(app: &Application) {
 
         hidden_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
+
+            config::settings::set_show_hidden(is_active);
+
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 if tab_state.borrow().show_hidden != is_active {
                     tab_state.borrow_mut().show_hidden = is_active;
-                    refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry, &hidden_toggle, &sidebar_list);
+
+                    refresh_tab(
+                        &tab_state,
+                        &store,
+                        &ctx,
+                        &location_entry,
+                        &search_entry,
+                        &hidden_toggle,
+                        &sidebar_list,
+                    );
+
                     update_watcher(&notebook, &watcher_manager);
                 }
             }
         });
+
     }
 
     {
@@ -1587,6 +1607,8 @@ fn build_ui(app: &Application) {
     }
 
 
+
+
     {
         let window = window.clone();
         let notebook = notebook.clone();
@@ -1627,6 +1649,52 @@ fn build_ui(app: &Application) {
             ui::trash_view::show(&window, refresh_main);
         });
     }
+
+      {
+        let window = window.clone();
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        settings_btn.connect_clicked(move |_| {
+            let apply_changes: Rc<dyn Fn()> = Rc::new({
+                let notebook = notebook.clone();
+                let ctx = ctx.clone();
+                let location_entry = location_entry.clone();
+                let search_entry = search_entry.clone();
+                let hidden_toggle = hidden_toggle.clone();
+                let sidebar_list = sidebar_list.clone();
+                let watcher_manager = watcher_manager.clone();
+
+                move || {
+                    if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                        let show_hidden = config::settings::show_hidden_default();
+
+                        tab_state.borrow_mut().show_hidden = show_hidden;
+
+                        refresh_tab(
+                            &tab_state,
+                            &store,
+                            &ctx,
+                            &location_entry,
+                            &search_entry,
+                            &hidden_toggle,
+                            &sidebar_list,
+                        );
+
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                }
+            });
+
+            ui::settings::show(&window, apply_changes);
+        });
+    }
+
 
 
     {
