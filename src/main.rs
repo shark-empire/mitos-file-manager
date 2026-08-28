@@ -814,6 +814,10 @@ fn build_ui(app: &Application) {
     let ctx = Rc::new(RefCell::new(AppContext::new()));
 
     config::settings::load();
+    
+    let theme_mode = config::settings::theme_mode();
+    ui::theme::apply_theme(&window.display(), theme_mode);
+
 
     // Setup Inotify Channel
     let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
