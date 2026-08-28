@@ -6,6 +6,7 @@ mod filesystem;
 mod mime;
 mod navigation;
 mod operations;
+mod search;
 mod config;
 mod ui;
 mod portal;
