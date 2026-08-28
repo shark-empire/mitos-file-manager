@@ -905,8 +905,8 @@ fn build_ui(app: &Application) {
 
 
 
-    let sidebar_list = ListBox::new();
-    sidebar_list.set_selection_mode(SelectionMode::Single);
+    let sidebar_stack = gtk::Stack::new();
+
     let sidebar_scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -915,16 +915,33 @@ fn build_ui(app: &Application) {
     sidebar_scrolled.set_width_request(190);
     sidebar_scrolled.set_vexpand(true);
 
+    sidebar_stack.add_named(&sidebar_scrolled, Some("places"));
+    sidebar_stack.add_named(&tree_scrolled, Some("tree"));
+    sidebar_stack.set_visible_child_name("places");
+
+        // Tree view (hidden by default, toggled via sidebar)
+    let (tree_list, tree_state) = ui::tree_view::build(locations::home_dir());
+    tree_list.set_visible(false);
+
+    let tree_scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .build();
+
+    tree_scrolled.set_child(Some(&tree_list));
+    tree_scrolled.set_visible(false);
+    tree_scrolled.set_width_request(190);
+    tree_scrolled.set_vexpand(true);
+
+
     let notebook = Notebook::new();
     notebook.set_show_tabs(true);
     notebook.set_show_border(false);
     notebook.set_vexpand(true);
-    notebook.set_hexpand(true);
+    notebook.set_hexpand(true); Bbb bm
+    m
 
-    let content = GtkBox::new(Orientation::Horizontal, 6);
-    content.append(&sidebar_scrolled);
-    content.append(&notebook);
-    content.set_vexpand(true);
+    let con
 
     let (preview_scrolled, preview_box) = ui::preview::build();
     content.append(&preview_scrolled);
