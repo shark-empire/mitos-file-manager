@@ -7,3 +7,4 @@ pub mod path_bar;
 pub mod progress;
 pub mod trash_view;
 pub mod batch_rename;
+pub mod settings;
