@@ -66,9 +66,10 @@ pub fn show(parent: &ApplicationWindow, refresh_main: Rc<dyn Fn()>) {
         let refresh_main = refresh_main.clone();
 
         empty_btn.connect_clicked(move |_| {
-            if !confirm_empty(&window) {
+            if crate::config::settings::confirm_trash_enabled() && !confirm_empty(&window) {
                 return;
             }
+
 
             if let Err(err) = trash::empty() {
                 dialogs::show_error(&window, &format!("Could not empty trash: {err}"));
