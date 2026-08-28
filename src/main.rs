@@ -6,6 +6,7 @@ mod filesystem;
 mod mime;
 mod navigation;
 mod operations;
+mod config;
 mod ui;
 
 use gtk::prelude::*;
