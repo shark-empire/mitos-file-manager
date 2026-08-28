@@ -535,7 +535,7 @@ fn refresh_tab(
     s.items = items;
 
     if let Some(win) = location_entry.data::<gtk::ApplicationWindow>("main-window") {
-        sidebar::build(sidebar_list, &ctx.borrow().bookmarks, &win);
+        sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
     }
 
 
