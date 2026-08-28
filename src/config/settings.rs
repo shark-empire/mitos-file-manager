@@ -7,6 +7,8 @@ static SHOW_HIDDEN: AtomicBool = AtomicBool::new(false);
 static THUMBNAILS_ENABLED: AtomicBool = AtomicBool::new(true);
 static THUMBNAIL_MAX_MB: AtomicU64 = AtomicU64::new(50);
 static CONFIRM_TRASH: AtomicBool = AtomicBool::new(true);
+static THEME_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
@@ -15,7 +17,9 @@ pub struct Settings {
     pub enable_thumbnails: bool,
     pub thumbnail_max_mb: u64,
     pub confirm_trash: bool,
+    pub theme_mode: String,
 }
+
 
 impl Default for Settings {
     fn default() -> Self {
@@ -24,9 +28,11 @@ impl Default for Settings {
             enable_thumbnails: true,
             thumbnail_max_mb: 50,
             confirm_trash: true,
+            theme_mode: "light".to_string(),
         }
     }
 }
+
 
 pub fn load() -> Settings {
     let settings = read_from_disk().unwrap_or_default();
@@ -50,18 +56,21 @@ pub fn apply_and_save(
     enable_thumbnails: bool,
     thumbnail_max_mb: u64,
     confirm_trash: bool,
+    theme_mode: &str,
 ) {
     let settings = Settings {
         show_hidden_files,
         enable_thumbnails,
         thumbnail_max_mb,
         confirm_trash,
+        theme_mode: theme_mode.to_string(),
     };
 
     apply_globals(&settings);
 
     let _ = write_to_disk(&settings);
 }
+
 
 pub fn set_show_hidden(value: bool) {
     SHOW_HIDDEN.store(value, Ordering::Relaxed);
@@ -93,7 +102,11 @@ fn apply_globals(settings: &Settings) {
     THUMBNAILS_ENABLED.store(settings.enable_thumbnails, Ordering::Relaxed);
     THUMBNAIL_MAX_MB.store(settings.thumbnail_max_mb, Ordering::Relaxed);
     CONFIRM_TRASH.store(settings.confirm_trash, Ordering::Relaxed);
+
+    let dark = settings.theme_mode == "dark";
+    THEME_MODE.store(dark, Ordering::Relaxed);
 }
+
 
 fn save_current() {
     let _ = write_to_disk(&current());
@@ -129,3 +142,16 @@ fn write_to_disk(settings: &Settings) -> std::io::Result<()> {
 
     fs::write(path, json)
 }
+
+pub fn theme_mode() -> crate::ui::theme::ThemeMode {
+    if THEME_MODE.load(Ordering::Relaxed) {
+        crate::ui::theme::ThemeMode::Dark
+    } else {
+        crate::ui::theme::ThemeMode::Light
+    }
+}
+
+pub fn is_dark_theme() -> bool {
+    THEME_MODE.load(Ordering::Relaxed)
+}
+
