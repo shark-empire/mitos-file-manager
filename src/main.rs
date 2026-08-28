@@ -1136,66 +1136,7 @@ fn build_ui(app: &Application) {
     }
 
 
-        // --- Volume Monitor (USB / Network Hotplug) ---
-    {
-        let monitor = gio::VolumeMonitor::get();
-        let notebook = notebook.clone();
-        let ctx = ctx.clone();
-        let location_entry = location_entry.clone();
-        let search_entry = search_entry.clone();
-        let hidden_toggle = hidden_toggle.clone();
-        let sidebar_list = sidebar_list.clone();
-        let watcher_manager = watcher_manager.clone();
 
-        let rebuild_and_check = move |unmounted_path: Option<PathBuf>| {
-            // 1. Rebuild Sidebar
-            if let Some(win) = location_entry.data::<gtk::ApplicationWindow>("main-window") {
-                sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
-            }
-
-            // 2. If a drive was unplugged, check if the active tab was looking at it
-            if let Some(lost_path) = unmounted_path {
-                if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                    let current = tab_state.borrow().current.clone();
-                    if current.starts_with(&lost_path) || current == lost_path {
-                        // The drive we are viewing was pulled out! Go Home.
-                        tab_state.borrow_mut().current = locations::home_dir();
-                        refresh_tab(
-                            &tab_state,
-                            &store,
-                            &ctx,
-                            &location_entry,
-                            &search_entry,
-                            &hidden_toggle,
-                            &sidebar_list,
-                        );
-                        update_watcher(&notebook, &watcher_manager);
-                    }
-                }
-            }
-        };
-
-        let rebuild_add = rebuild_and_check.clone();
-        monitor.connect_mount_added(move |_, _| {
-            rebuild_add(None);
-        });
-
-        let rebuild_remove = rebuild_and_check.clone();
-        monitor.connect_mount_removed(move |_, mount| {
-            let path = mount.root().path();
-            rebuild_remove(path);
-        });
-
-        let rebuild_vol_add = rebuild_and_check.clone();
-        monitor.connect_volume_added(move |_, _| {
-            rebuild_vol_add(None);
-        });
-
-        let rebuild_vol_rem = rebuild_and_check.clone();
-        monitor.connect_volume_removed(move |_, _| {
-            rebuild_vol_rem(None);
-        });
-    }
 
     // --- Global Signals ---
 
@@ -1709,6 +1650,67 @@ fn build_ui(app: &Application) {
     
                 update_watcher(&notebook, &watcher_manager);
             }
+        });
+    }
+
+        // --- Volume Monitor (USB / Network Hotplug) ---
+    {
+        let monitor = gio::VolumeMonitor::get();
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        let rebuild_and_check = move |unmounted_path: Option<PathBuf>| {
+            // 1. Rebuild Sidebar
+            if let Some(win) = location_entry.data::<gtk::ApplicationWindow>("main-window") {
+                sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
+            }
+
+            // 2. If a drive was unplugged, check if the active tab was looking at it
+            if let Some(lost_path) = unmounted_path {
+                if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                    let current = tab_state.borrow().current.clone();
+                    if current.starts_with(&lost_path) || current == lost_path {
+                        // The drive we are viewing was pulled out! Go Home.
+                        tab_state.borrow_mut().current = locations::home_dir();
+                        refresh_tab(
+                            &tab_state,
+                            &store,
+                            &ctx,
+                            &location_entry,
+                            &search_entry,
+                            &hidden_toggle,
+                            &sidebar_list,
+                        );
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                }
+            }
+        };
+
+        let rebuild_add = rebuild_and_check.clone();
+        monitor.connect_mount_added(move |_, _| {
+            rebuild_add(None);
+        });
+
+        let rebuild_remove = rebuild_and_check.clone();
+        monitor.connect_mount_removed(move |_, mount| {
+            let path = mount.root().path();
+            rebuild_remove(path);
+        });
+
+        let rebuild_vol_add = rebuild_and_check.clone();
+        monitor.connect_volume_added(move |_, _| {
+            rebuild_vol_add(None);
+        });
+
+        let rebuild_vol_rem = rebuild_and_check.clone();
+        monitor.connect_volume_removed(move |_, _| {
+            rebuild_vol_rem(None);
         });
     }
 
