@@ -638,6 +638,23 @@ fn add_tab(
     let page_index = notebook.append_page(&page_widget, Some(&tab_label));
     notebook.set_tab_reorderable(&page_widget, true);
 
+        // Tab context menu (right-click on tab)
+    {
+        let notebook = notebook.clone();
+        let page_widget = page_widget.clone();
+
+        let tab_gesture = gtk::GestureClick::new();
+        tab_gesture.set_button(3); // Right click
+
+        tab_gesture.connect_pressed(move |_gesture, _n_press, x, y| {
+            ui::tab_menu::show_tab_context_menu(&notebook, &page_widget, x, y);
+        });
+
+        // Attach gesture to the tab label
+        tab_label.add_controller(tab_gesture);
+    }
+
+
     {
         let notebook = notebook.clone();
         let page_widget = page_widget.clone();
@@ -844,6 +861,11 @@ fn build_ui(app: &Application) {
     search_entry.set_placeholder_text(Some("Search..."));
     search_entry.set_width_request(200);
 
+    let search_recursive_toggle = CheckButton::with_label("Recursive");
+    search_recursive_toggle.set_active(true);
+    toolbar1.append(&search_recursive_toggle);
+
+
     toolbar1.append(&back_btn);
     toolbar1.append(&forward_btn);
     toolbar1.append(&up_btn);
@@ -859,6 +881,7 @@ fn build_ui(app: &Application) {
     let copy_btn = Button::with_label("Copy");
     let move_btn = Button::with_label("Move");
     let paste_btn = Button::with_label("Paste");
+    let split_toggle = CheckButton::with_label("Split View");
     let trash_btn = Button::with_label("Trash");
     let open_trash_btn = Button::with_label("Open Trash");
     let preview_toggle = CheckButton::with_label("Preview");
@@ -876,6 +899,8 @@ fn build_ui(app: &Application) {
     toolbar2.append(&trash_btn);
     toolbar2.append(&open_trash_btn);
     toolbar2.append(&settings_btn);
+    toolbar2.append(&preview_toggle);
+    toolbar2.append(&split_toggle);
     toolbar2.append(&hidden_toggle);
 
 
@@ -903,6 +928,15 @@ fn build_ui(app: &Application) {
 
     let (preview_scrolled, preview_box) = ui::preview::build();
     content.append(&preview_scrolled);
+        // Split view pane (hidden by default)
+    let split_pane = ui::split_pane::build(locations::home_dir());
+    split_pane.container.set_visible(false);
+    content.append(&split_pane.container.clone());
+
+    let split_state = split_pane.state.clone();
+    let split_store = split_pane.store.clone();
+    let split_label = split_pane.location_label.clone();
+
 
 
     let status_bar = GtkBox::new(Orientation::Horizontal, 6);
@@ -935,6 +969,10 @@ fn build_ui(app: &Application) {
     location_entry.set_data("selection-label", selection_label.clone());
     location_entry.set_data("job-queue", job_queue.clone());
     location_entry.set_data("preview-panel", preview_scrolled.clone());
+    location_entry.set_data("split-state", split_state.clone());
+    location_entry.set_data("split-store", split_store.clone());
+    location_entry.set_data("split-label", split_label.clone());
+    location_entry.set_data("split-container", split_pane.container.clone());
     location_entry.set_data("preview-box", preview_box.clone());
 
 
@@ -1200,18 +1238,101 @@ fn build_ui(app: &Application) {
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
+        let search_recursive_toggle = search_recursive_toggle.clone();
 
-        search_entry.connect_search_changed(move |entry| {
+        search_entry.connect_activate(move |entry| {
             let query = entry.text().to_string();
+
+            if query.is_empty() {
+                // Clear search, return to normal view
+                if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                    tab_state.borrow_mut().search_query = String::new();
+                    refresh_tab(
+                        &tab_state,
+                        &store,
+                        &ctx,
+                        &location_entry,
+                        &search_entry_clone,
+                        &hidden_toggle,
+                        &sidebar_list,
+                    );
+                    update_watcher(&notebook, &watcher_manager);
+                }
+                return;
+            }
+
+            let recursive = search_recursive_toggle.is_active();
+
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                if tab_state.borrow().search_query != query {
-                    tab_state.borrow_mut().search_query = query;
-                    refresh_tab(&tab_state, &store, &ctx, &location_entry, &search_entry_clone, &hidden_toggle, &sidebar_list);
+                let root = tab_state.borrow().current.clone();
+
+                if recursive {
+                    // Start recursive search in background
+                    let filters = search::filters::SearchFilters {
+                        query: query.clone(),
+                        recursive: true,
+                        match_file_name: true,
+                        match_content: false,
+                        file_types: Vec::new(),
+                        min_size_bytes: None,
+                        max_size_bytes: None,
+                    };
+
+                    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let (tx, rx) = std::sync::mpsc::channel();
+
+                    search::engine::start_search(root.clone(), filters, cancel.clone(), tx);
+
+                    let tab_state = tab_state.clone();
+                    let store = store.clone();
+                    let ctx = ctx.clone();
+                    let location_entry = location_entry.clone();
+                    let search_entry_clone = search_entry_clone.clone();
+                    let hidden_toggle = hidden_toggle.clone();
+                    let sidebar_list = sidebar_list.clone();
+                    let watcher_manager = watcher_manager.clone();
+                    let notebook = notebook.clone();
+
+                    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+
+                    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                        let rx = rx.lock().unwrap();
+
+                        if let Ok(results) = rx.try_recv() {
+                            let items: Vec<crate::filesystem::directory::Item> =
+                                results.into_iter().map(|r| r.item).collect();
+
+                            let mut s = tab_state.borrow_mut();
+                            s.search_query = query.clone();
+                            s.items = items.clone();
+                            drop(s);
+
+                            crate::ui::grid_view::render(&store, &items);
+
+                            return glib::ControlFlow::Break;
+                        }
+
+                        glib::ControlFlow::Continue
+                        });
+
+                } else {
+                    // Non-recursive: just filter current directory
+                    tab_state.borrow_mut().search_query = query.clone();
+                    refresh_tab(
+                        &tab_state,
+                        &store,
+                        &ctx,
+                        &location_entry,
+                        &search_entry_clone,
+                        &hidden_toggle,
+                        &sidebar_list,
+                    );
                     update_watcher(&notebook, &watcher_manager);
                 }
             }
         });
     }
+
 
     {
         let notebook = notebook.clone();
@@ -1691,6 +1812,19 @@ fn build_ui(app: &Application) {
     }
 
 
+    {
+        let location_entry = location_entry.clone();
+
+        split_toggle.connect_toggled(move |toggle| {
+            if let Some(container) = location_entry.data::<gtk::Box>("split-container") {
+                container.set_visible(toggle.is_active());
+            }
+        });
+    }
+
+
+
+
       {
         let window = window.clone();
         let notebook = notebook.clone();
@@ -1951,6 +2085,7 @@ fn show_context_menu(
     let extract_btn = Button::with_label("Extract Here");
     let copy_btn = Button::with_label("Copy");
     let move_btn = Button::with_label("Move");
+    let copy_to_split_btn = Button::with_label("Copy to Split Pane");
     let rename_btn = Button::with_label("Rename");
     let trash_btn = Button::with_label("Trash");
     let batch_rename_btn = Button::with_label("Batch Rename");
@@ -1965,6 +2100,8 @@ fn show_context_menu(
                 .as_ref()
                 .map_or(false, |i| !i.is_dir()),
     );
+
+    copy_to_split_btn.set_sensitive(count >= 1);
 
     compress_btn.set_sensitive(!items.is_empty());
     extract_btn.set_sensitive(
@@ -1985,6 +2122,7 @@ fn show_context_menu(
     menu_box.append(&extract_btn);
     menu_box.append(&copy_btn);
     menu_box.append(&move_btn);
+    menu_box.append(&copy_to_split_btn);
     menu_box.append(&rename_btn);
     menu_box.append(&batch_rename_btn);
     menu_box.append(&trash_btn);
@@ -2235,6 +2373,37 @@ fn show_context_menu(
             ctx.borrow_mut().pending = Some((PendingOp::Move, paths.clone()));
         });
     }
+
+        {
+        let popover = popover.clone();
+        let location_entry = location_entry.clone();
+        let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
+
+        copy_to_split_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            if let Some(split_state) = location_entry
+                .data::<std::rc::Rc<std::cell::RefCell<ui::split_pane::SplitPaneState>>>("split-state")
+            {
+                let dest = split_state.borrow().current.clone();
+
+                for source in &paths {
+                    let file_name = source.file_name().unwrap_or_default();
+                    let target = dest.join(file_name);
+
+                    let _ = crate::operations::copy::copy_path(source, &target);
+                }
+
+                // Refresh split pane
+                if let Some(store) = location_entry.data::<gio::ListStore>("split-store") {
+                    if let Some(label) = location_entry.data::<Label>("split-label") {
+                        ui::split_pane::refresh_pane(&split_state, &store, &label);
+                    }
+                }
+            }
+        });
+    }
+
 
     {
         let popover = popover.clone();
