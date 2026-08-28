@@ -16,6 +16,7 @@ use gtk::{
     Notebook, Orientation, ScrolledWindow, SearchEntry, SelectionMode,
 };
 
+
 use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
@@ -583,34 +584,44 @@ fn add_tab(
     page_widget.set_data("list-store", store.clone());
     page_widget.set_data("selection-model", selection.clone());
 
-        // Update selection status bar
-    {
-        let selection_label = location_entry
+        // Update selection status     
+ {
+         
+    let selection_label = location_entry
             .data::<Label>("selection-label")
-            .map(|label| label.clone());
+            .map(|l| l.clone());
+
+        let preview_box = location_entry
+            .data::<GtkBox>("preview-box")
+            .map(|p| p.clone());
 
         let store_for_selection = store.clone();
 
         selection.connect_selection_changed(move |selection| {
-            let Some(selection_label) = selection_label.clone() else {
-                return;
-            };
-
             let selected = grid_view::selected_items(selection, &store_for_selection);
 
-            if selected.is_empty() {
-                selection_label.set_label("");
-            } else {
-                let total: u64 = selected.iter().map(|item| item.size()).sum();
+            // Update selection label
+            if let Some(selection_label) = selection_label.clone() {
+                if selected.is_empty() {
+                    selection_label.set_label("");
+                } else {
+                    let total: u64 = selected.iter().map(|item| item.size()).sum();
 
-                selection_label.set_label(&format!(
-                    "{} selected · {}",
-                    selected.len(),
-                    metadata::format_size(total)
-                ));
+                    selection_label.set_label(&format!(
+                        "{} selected · {}",
+                        selected.len(),
+                        metadata::format_size(total)
+                    ));
+                }
+            }
+
+            // Update preview panel
+            if let Some(preview_box) = preview_box.clone() {
+                ui::preview::update(&preview_box, selected.first());
             }
         });
     }
+
 
 
     let tab_label = GtkBox::new(Orientation::Horizontal, 4);
@@ -840,6 +851,7 @@ fn build_ui(app: &Application) {
     let paste_btn = Button::with_label("Paste");
     let trash_btn = Button::with_label("Trash");
     let open_trash_btn = Button::with_label("Open Trash");
+    let preview_toggle = CheckButton::with_label("Preview");
     let hidden_toggle = CheckButton::with_label("Hidden");
     let settings_btn = Button::with_label("Settings");
 
@@ -879,6 +891,10 @@ fn build_ui(app: &Application) {
     content.append(&notebook);
     content.set_vexpand(true);
 
+    let (preview_scrolled, preview_box) = ui::preview::build();
+    content.append(&preview_scrolled);
+
+
     let status_bar = GtkBox::new(Orientation::Horizontal, 6);
 
     let status_label = Label::new(Some("Ready"));
@@ -908,6 +924,9 @@ fn build_ui(app: &Application) {
     location_entry.set_data("status-label", status_label.clone());
     location_entry.set_data("selection-label", selection_label.clone());
     location_entry.set_data("job-queue", job_queue.clone());
+    location_entry.set_data("preview-panel", preview_scrolled.clone());
+    location_entry.set_data("preview-box", preview_box.clone());
+
 
 
     window.set_child(Some(&root));
@@ -1649,6 +1668,18 @@ fn build_ui(app: &Application) {
             ui::trash_view::show(&window, refresh_main);
         });
     }
+
+
+    {
+        let location_entry = location_entry.clone();
+
+        preview_toggle.connect_toggled(move |toggle| {
+            if let Some(panel) = location_entry.data::<gtk::ScrolledWindow>("preview-panel") {
+                panel.set_visible(toggle.is_active());
+            }
+        });
+    }
+
 
       {
         let window = window.clone();
