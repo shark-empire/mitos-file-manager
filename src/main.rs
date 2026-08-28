@@ -8,6 +8,7 @@ mod navigation;
 mod operations;
 mod config;
 mod ui;
+mod portal;
 
 use gtk::prelude::*;
 use gtk::gio;
