@@ -15,7 +15,7 @@ impl TabState {
         Self {
             current: path,
             history: History::new(),
-            show_hidden: false,
+            show_hidden: crate::config::settings::show_hidden_default(),
             items: Vec::new(),
             search_query: String::new(),
         }
