@@ -40,6 +40,12 @@ use ui::grid_view;
 use ui::item_object::ItemObject;
 use ui::sidebar;
 
+thread_local! {
+    static TYPEAHEAD_BUFFER: std::cell::RefCell<(String, std::time::Instant)> =
+        std::cell::RefCell::new((String::new(), std::time::Instant::now()));
+}
+
+
 enum JobRequest {
     Paste {
         operation: PendingOp,
@@ -139,6 +145,15 @@ fn update_watcher(
         watcher_manager.borrow_mut().watch(&current);
     }
 }
+
+fn open_file_default(path: &PathBuf) {
+    let uri = format!("file://{}", path.display());
+
+    if gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>).is_err() {
+        let _ = Command::new("xdg-open").arg(path).spawn();
+    }
+}
+
 
 fn start_paste_job_ui(
     window: &ApplicationWindow,
@@ -572,6 +587,21 @@ fn refresh_tab(
     grid_view::render(store, &items);
     s.items = items;
 
+    if let Some(stack) = store.data::<gtk::Stack>("view-stack") {
+        if let Some(empty_widget) = stack.child_by_name("empty") {
+            if let Some(empty_lbl) = empty_widget.downcast_ref::<Label>() {
+                empty_lbl.set_label(if s.search_query.is_empty() {
+                    "This folder is empty"
+                } else {
+                    "No results found"
+                });
+            }
+        }
+
+        stack.set_visible_child_name(if item_count == 0 { "empty" } else { "files" });
+    }
+
+
     if let Some(win) = location_entry.data::<gtk::ApplicationWindow>("main-window") {
         sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
     }
@@ -610,8 +640,21 @@ fn add_tab(
     scrolled.set_child(Some(&grid));
     scrolled.set_vexpand(true);
 
+    let empty_label = Label::new(Some("This folder is empty"));
+    empty_label.set_vexpand(true);
+    empty_label.set_valign(gtk::Align::Center);
+    empty_label.add_css_class("dim-label");
+
+    let view_stack = gtk::Stack::new();
+    view_stack.set_vexpand(true);
+    view_stack.add_named(&scrolled, Some("files"));
+    view_stack.add_named(&empty_label, Some("empty"));
+
     let page_widget = GtkBox::new(Orientation::Vertical, 0);
-    page_widget.append(&scrolled);
+    page_widget.append(&view_stack);
+
+    store.set_data("view-stack", view_stack.clone());
+
 
     page_widget.set_data("tab-state", tab_state.clone());
     page_widget.set_data("grid-view", grid.clone());
@@ -734,9 +777,11 @@ fn add_tab(
                                         &format!("Failed to open: {}", err),
                                     );
                                 }
-                            } else {
-                                let _ = Command::new("xdg-open").arg(&path).spawn();
-                            }
+                        } else {
+                            let path = item_obj.get_path();
+                            open_file_default(&path);
+                        }
+
                         }
                     }
                 }
@@ -1230,6 +1275,19 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
             let alt = modifier.contains(gtk::gdk::ModifierType::ALT_MASK);
             let active = get_active_widgets(&notebook);
 
+                        // Type-ahead: typing letters jumps to matching files
+            if !ctrl && !alt {
+                if let Some(ch) = key.to_unicode() {
+                    if ch.is_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                        if let Some((_, grid, store, selection)) = &active {
+                            typeahead_select(ch, grid, store, selection);
+                            return glib::Propagation::Stop;
+                        }
+                    }
+                }
+            }
+
+
             match key {
                 k if ctrl && k == gtk::gdk::Key::c => {
                     if let Some((_, _, store, selection)) = &active {
@@ -1616,6 +1674,12 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
 
         sidebar_list.connect_row_activated(move |_, row| {
             if let Some(path) = sidebar::resolve_click(row) {
+                // Recent entries are files → open them instead of navigating
+                if path.is_file() {
+                    open_file_default(&path);
+                    return;
+                }
+
                 if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                     navigate_to(&tab_state, path);
                     refresh_tab(
@@ -1631,6 +1695,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                 }
             }
         });
+
     }
 
     {
@@ -3205,3 +3270,39 @@ fn filesystem_free_string(path: &std::path::Path) -> String {
     }
     "?".to_string()
 }
+
+fn typeahead_select(
+    ch: char,
+    grid: &gtk::GridView,
+    store: &gio::ListStore,
+    selection: &gtk::MultiSelection,
+) {
+    TYPEAHEAD_BUFFER.with(|buf| {
+        let mut b = buf.borrow_mut();
+
+        if b.1.elapsed().as_millis() > 800 {
+            b.0.clear();
+        }
+
+        b.0.push(ch);
+        b.1 = std::time::Instant::now();
+
+        let query = b.0.to_lowercase();
+
+        for i in 0..store.n_items() {
+            let Some(obj) = store.item(i) else { continue };
+            let Some(item) = obj.downcast_ref::<ItemObject>() else { continue };
+
+            if item.name().to_lowercase().starts_with(&query) {
+                selection.set_selected(i);
+                grid.scroll_to(
+                    i,
+                    gtk::ListScrollFlags::SELECT | gtk::ListScrollFlags::FOCUS,
+                    None,
+                );
+                break;
+            }
+        }
+    });
+}
+
