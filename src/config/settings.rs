@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use super::shared::SharedConfig;
+
 static SHOW_HIDDEN: AtomicBool = AtomicBool::new(false);
 static THUMBNAILS_ENABLED: AtomicBool = AtomicBool::new(true);
 static THUMBNAIL_MAX_MB: AtomicU64 = AtomicU64::new(50);
@@ -37,10 +39,21 @@ impl Default for Settings {
 pub fn load() -> Settings {
     let settings = read_from_disk().unwrap_or_default();
 
-    apply_globals(&settings);
+    // Also load from shared config
+    let shared = SharedConfig::load();
+    
+    let merged = Settings {
+        show_hidden_files: shared.show_hidden_files,
+        enable_thumbnails: shared.enable_thumbnails,
+        thumbnail_max_mb: shared.thumbnail_max_mb,
+        confirm_trash: settings.confirm_trash,
+        theme_mode: shared.theme_mode,
+    };
 
-    settings
+    apply_globals(&merged);
+    merged
 }
+
 
 pub fn current() -> Settings {
     Settings {
@@ -68,7 +81,16 @@ pub fn apply_and_save(
 
     apply_globals(&settings);
 
+    // Save to MITOS Files config
     let _ = write_to_disk(&settings);
+
+    // Sync to shared MITOS config (for compositor)
+    let mut shared = SharedConfig::load();
+    shared.show_hidden_files = show_hidden_files;
+    shared.enable_thumbnails = enable_thumbnails;
+    shared.thumbnail_max_mb = thumbnail_max_mb;
+    shared.theme_mode = theme_mode.to_string();
+    let _ = shared.save();
 }
 
 
