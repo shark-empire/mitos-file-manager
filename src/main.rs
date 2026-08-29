@@ -2,7 +2,6 @@
 
 mod app;
 mod config;
-mod desktop;
 mod error;
 mod filesystem;
 mod mime;
@@ -885,13 +884,21 @@ fn build_ui(app: &Application) {
 
     let ctx = Rc::new(RefCell::new(AppContext::new()));
 
-    config::settings::load();
+// After loading settings
+config::settings::load();
+
+// Start config watcher
+let (config_tx, config_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
+let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
+
+
+
 
     let theme_mode = config::settings::theme_mode();
     ui::theme::apply_theme(&window.display(), theme_mode);
 
     let portal_rx = portal::service::start();
-    let desktop_rx = desktop::service::start();
+
 
 
     // Setup Inotify Channel
@@ -1076,6 +1083,43 @@ fn build_ui(app: &Application) {
         &sidebar_list,
         &watcher_manager,
     );
+
+    // Poll for config changes
+{
+    let notebook = notebook.clone();
+    let ctx = ctx.clone();
+    let location_entry = location_entry.clone();
+    let search_entry = search_entry.clone();
+    let hidden_toggle = hidden_toggle.clone();
+    let sidebar_list = sidebar_list.clone();
+    let watcher_manager = watcher_manager.clone();
+
+    config_rx.attach(None, move |shared_config| {
+        // Apply theme if changed
+        let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
+        if let Some(display) = gdk::Display::default() {
+            crate::ui::theme::apply_theme(&display, theme_mode);
+        }
+
+        // Refresh current tab
+        if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+            tab_state.borrow_mut().show_hidden = shared_config.show_hidden_files;
+            
+            refresh_tab(
+                &tab_state,
+                &store,
+                &ctx,
+                &location_entry,
+                &search_entry,
+                &hidden_toggle,
+                &sidebar_list,
+            );
+            update_watcher(&notebook, &watcher_manager);
+        }
+
+        glib::ControlFlow::Continue
+    });
+}
 
     // --- Inotify Receiver ---
     {
