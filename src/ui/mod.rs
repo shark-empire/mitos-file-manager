@@ -14,3 +14,4 @@ pub mod split_pane;
 pub mod tab_menu;
 pub mod tree_view;
 pub mod window;
+pub mod accessibility;
