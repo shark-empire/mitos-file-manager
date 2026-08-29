@@ -42,8 +42,12 @@ mod imp {
         #[property(get, set)]
         pub is_symlink: RefCell<bool>,
 
-       #[property(get, set)]
+        #[property(get, set)]
         pub size: RefCell<u64>,
+
+        #[property(get, set)]
+        pub modified_secs: RefCell<u64>,
+
 
     }
 
@@ -69,6 +73,13 @@ impl ItemObject {
             metadata::format_size(item.metadata.size)
         };
 
+        let modified_secs = item
+            .metadata
+            .modified
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
         let modified_str = metadata::format_modified(item.metadata.modified);
 
         glib::Object::builder()
@@ -83,6 +94,7 @@ impl ItemObject {
             .property("permissions", &item.metadata.permissions)
             .property("is-symlink", item.metadata.is_symlink)
             .property("size", item.metadata.size)
+            .property("modified-secs", modified_secs)
             .build()
     }
 
