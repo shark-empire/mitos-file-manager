@@ -891,7 +891,8 @@ fn build_ui(app: &Application) {
     ui::theme::apply_theme(&window.display(), theme_mode);
 
     let portal_rx = portal::service::start();
-    let _desktop_rx = desktop::service::start();
+    let desktop_rx = desktop::service::start();
+
 
     // Setup Inotify Channel
     let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
@@ -2292,6 +2293,65 @@ fn build_ui(app: &Application) {
         let rebuild_vol_rem = rebuild_and_check.clone();
         monitor.connect_volume_removed(move |_, _| rebuild_vol_rem(None));
     }
+
+    // Desktop Service Receiver
+    {
+        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+            while let Ok(request) = desktop_rx.try_recv() {
+                match request {
+                    desktop::service::DesktopRequest::SetWallpaper {
+                        path,
+                        response_tx,
+                    } => {
+                        // Store wallpaper path in MITOS config for the compositor to read.
+                        let config_dir = dirs::config_dir()
+                            .unwrap_or_else(|| PathBuf::from("."))
+                            .join("mitos/desktop");
+
+                        let _ = fs::create_dir_all(&config_dir);
+                        let wallpaper_file = config_dir.join("wallpaper");
+
+                        match fs::write(&wallpaper_file, &path) {
+                            Ok(()) => {
+                                let _ = response_tx.send(Ok(()));
+                            }
+                            Err(err) => {
+                                let _ = response_tx
+                                    .send(Err(format!("Failed to set wallpaper: {err}")));
+                            }
+                        }
+                    }
+
+                    desktop::service::DesktopRequest::GetWallpaper { response_tx } => {
+                        let config_dir = dirs::config_dir()
+                            .unwrap_or_else(|| PathBuf::from("."))
+                            .join("mitos/desktop");
+
+                        let wallpaper_file = config_dir.join("wallpaper");
+
+                        match fs::read_to_string(&wallpaper_file) {
+                            Ok(path) => {
+                                let _ = response_tx.send(path.trim().to_string());
+                            }
+                            Err(_) => {
+                                let _ = response_tx.send(String::new());
+                            }
+                        }
+                    }
+
+                    desktop::service::DesktopRequest::OpenDesktopSettings {
+                        response_tx,
+                    } => {
+                        // Placeholder: in the future this opens the MITOS Settings app.
+                        let _ = response_tx.send(Ok(()));
+                    }
+                }
+            }
+
+            glib::ControlFlow::Continue
+        });
+    }
+
 
     // Portal Receiver
     {
