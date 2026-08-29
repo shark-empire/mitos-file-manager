@@ -16,3 +16,4 @@ pub mod tree_view;
 pub mod window;
 pub mod accessibility;
 pub mod list_view;
+pub mod properties;
