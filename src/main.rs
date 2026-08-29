@@ -81,13 +81,19 @@ struct JobUi {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
     let app = Application::builder()
         .application_id("org.mitos.file-manager")
         .build();
 
-    app.connect_activate(build_ui);
+    app.connect_activate(move |app| {
+        build_ui(app, &args);
+    });
+
     let _ = app.run();
 }
+
 
 fn get_active_widgets(
     notebook: &Notebook,
@@ -478,11 +484,31 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
     let watcher_manager = ui.watcher_manager.clone();
 
     ui::progress::show_progress_dialog(&ui.window, title, handle, receiver, move |result| {
+        // Native desktop notification via the session notification daemon
+        match &result {
+            Ok(count) => send_job_notification(
+                &window_error,
+                "Operation complete",
+                &format!("{title}: {count} item(s) processed"),
+            ),
+            Err(err) if err.contains("Cancelled") => {
+                send_job_notification(&window_error, "Operation cancelled", title);
+            }
+            Err(err) => {
+                send_job_notification(
+                    &window_error,
+                    "Operation failed",
+                    &format!("{title}: {err}"),
+                );
+            }
+        }
+
         if let Err(err) = result {
             if !err.contains("Cancelled") {
                 dialogs::show_error(&window_error, &format!("Job failed: {err}"));
             }
         }
+
 
         if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
             refresh_tab(
@@ -866,7 +892,7 @@ fn add_tab(
     update_watcher(notebook, watcher_manager);
 }
 
-fn build_ui(app: &Application) {
+fn build_ui(app: &Application, initial_args: &[String]) {
     let window = ApplicationWindow::builder()
         .application(app)
         .title("MITOS Files")
@@ -1072,17 +1098,40 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
 
     window.set_child(Some(&root));
 
-    add_tab(
-        &notebook,
-        &ctx,
-        locations::home_dir(),
-        &window,
-        &location_entry,
-        &search_entry,
-        &hidden_toggle,
-        &sidebar_list,
-        &watcher_manager,
-    );
+    // Open directories passed on the command line.
+    // Files open their parent directory.
+    let mut initial_dirs: Vec<PathBuf> = Vec::new();
+
+    for arg in initial_args {
+        let path = normalize(PathBuf::from(arg));
+
+        if path.is_dir() {
+            initial_dirs.push(path);
+        } else if path.is_file() {
+            if let Some(parent) = path.parent() {
+                initial_dirs.push(parent.to_path_buf());
+            }
+        }
+    }
+
+    if initial_dirs.is_empty() {
+        initial_dirs.push(locations::home_dir());
+    }
+
+    for dir in initial_dirs {
+        add_tab(
+            &notebook,
+            &ctx,
+            dir,
+            &window,
+            &location_entry,
+            &search_entry,
+            &hidden_toggle,
+            &sidebar_list,
+            &watcher_manager,
+        );
+    }
+
 
     // Poll for config changes
 {
@@ -3131,6 +3180,17 @@ fn show_default_app_picker(
 
     window.present();
 }
+
+fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
+    if let Some(app) = window.application() {
+        let notification = gio::Notification::new(title);
+        notification.set_body(Some(body));
+        notification.set_priority(gio::NotificationPriority::Normal);
+
+        app.send_notification(Some("mitos-files-job"), &notification);
+    }
+}
+
 
 fn filesystem_free_string(path: &std::path::Path) -> String {
     let file = gio::File::for_path(path);
