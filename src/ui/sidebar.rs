@@ -30,6 +30,30 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
         add_row(list, name, icon, path, None, window);
     }
 
+        // --- RECENT FILES ---
+    let recents = crate::navigation::recent::recent_files(10);
+
+    if !recents.is_empty() {
+        add_header(list, "Recent");
+
+        for path in recents {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.display().to_string());
+
+            add_row(
+                list,
+                &name,
+                "document-open-recent-symbolic",
+                path,
+                Some("recent:"),
+                window,
+            );
+        }
+    }
+
+
     // --- 2. BOOKMARKS ---
     if !bookmarks.is_empty() {
         add_header(list, "Bookmarks");
@@ -189,12 +213,15 @@ fn add_row(
 /// Helper for main.rs to resolve what path was clicked
 pub fn resolve_click(row: &ListBoxRow) -> Option<PathBuf> {
     let name = row.name()?;
-    
+
     if let Some(path_str) = name.strip_prefix("place:") {
         Some(PathBuf::from(path_str))
     } else if let Some(path_str) = name.strip_prefix("bm:") {
+        Some(PathBuf::from(path_str))
+    } else if let Some(path_str) = name.strip_prefix("recent:") {
         Some(PathBuf::from(path_str))
     } else {
         None
     }
 }
+
