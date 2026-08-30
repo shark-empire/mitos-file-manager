@@ -51,7 +51,7 @@ impl SharedConfig {
 
         for line in contents.lines() {
             let line = line.trim();
-            
+
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -96,9 +96,8 @@ impl SharedConfig {
     }
 
     pub fn save(&self) -> io::Result<()> {
-        let path = config_path().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "No config directory")
-        })?;
+        let path = config_path()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No config directory"))?;
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -153,7 +152,10 @@ fn config_path() -> Option<PathBuf> {
         }
     }
 
-    std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".config").join("mitos").join("home.conf"))
+    std::env::var("HOME").ok().map(|home| {
+        PathBuf::from(home)
+            .join(".config")
+            .join("mitos")
+            .join("home.conf")
+    })
 }

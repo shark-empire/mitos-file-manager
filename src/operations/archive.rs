@@ -155,11 +155,29 @@ pub fn start_extract_job(
                 .unwrap_or_default();
 
             if name.ends_with(".zip") {
-                extract_zip(&archive_path, &destination_dir, sender.clone(), cancel, pause)
+                extract_zip(
+                    &archive_path,
+                    &destination_dir,
+                    sender.clone(),
+                    cancel,
+                    pause,
+                )
             } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
-                extract_tar_gz(&archive_path, &destination_dir, sender.clone(), cancel, pause)
+                extract_tar_gz(
+                    &archive_path,
+                    &destination_dir,
+                    sender.clone(),
+                    cancel,
+                    pause,
+                )
             } else if name.ends_with(".tar") {
-                extract_tar(&archive_path, &destination_dir, sender.clone(), cancel, pause)
+                extract_tar(
+                    &archive_path,
+                    &destination_dir,
+                    sender.clone(),
+                    cancel,
+                    pause,
+                )
             } else {
                 Err("Unsupported archive type".to_string())
             }

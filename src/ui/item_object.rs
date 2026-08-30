@@ -47,8 +47,6 @@ mod imp {
 
         #[property(get, set)]
         pub modified_secs: RefCell<u64>,
-
-
     }
 
     #[glib::object_subclass]

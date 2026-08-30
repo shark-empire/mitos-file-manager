@@ -145,11 +145,7 @@ fn create_tree_row(path: &Path, depth: usize, is_expanded: bool) -> ListBoxRow {
     row
 }
 
-pub fn toggle_folder(
-    state: &Rc<RefCell<TreeViewState>>,
-    list: &ListBox,
-    path: PathBuf,
-) {
+pub fn toggle_folder(state: &Rc<RefCell<TreeViewState>>, list: &ListBox, path: PathBuf) {
     {
         let mut s = state.borrow_mut();
 

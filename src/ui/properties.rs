@@ -61,7 +61,14 @@ fn build_general_tab(item: &ItemObject) -> gtk::Widget {
         ("Size", item.size_str()),
         ("Location", location),
         ("Modified", item.modified_str()),
-        ("Symlink", if item.is_symlink() { "Yes".into() } else { "No".into() }),
+        (
+            "Symlink",
+            if item.is_symlink() {
+                "Yes".into()
+            } else {
+                "No".into()
+            },
+        ),
     ];
 
     let mut row = 1;
@@ -166,15 +173,33 @@ fn build_permissions_tab(item: &ItemObject) -> gtk::Widget {
         apply_btn.connect_clicked(move |_| {
             let mut new_mode: u32 = current_mode & 0o7000;
 
-            if owner_r.is_active() { new_mode |= 0o400; }
-            if owner_w.is_active() { new_mode |= 0o200; }
-            if owner_x.is_active() { new_mode |= 0o100; }
-            if group_r.is_active() { new_mode |= 0o040; }
-            if group_w.is_active() { new_mode |= 0o020; }
-            if group_x.is_active() { new_mode |= 0o010; }
-            if other_r.is_active() { new_mode |= 0o004; }
-            if other_w.is_active() { new_mode |= 0o002; }
-            if other_x.is_active() { new_mode |= 0o001; }
+            if owner_r.is_active() {
+                new_mode |= 0o400;
+            }
+            if owner_w.is_active() {
+                new_mode |= 0o200;
+            }
+            if owner_x.is_active() {
+                new_mode |= 0o100;
+            }
+            if group_r.is_active() {
+                new_mode |= 0o040;
+            }
+            if group_w.is_active() {
+                new_mode |= 0o020;
+            }
+            if group_x.is_active() {
+                new_mode |= 0o010;
+            }
+            if other_r.is_active() {
+                new_mode |= 0o004;
+            }
+            if other_w.is_active() {
+                new_mode |= 0o002;
+            }
+            if other_x.is_active() {
+                new_mode |= 0o001;
+            }
 
             match std::fs::set_permissions(&path, std::fs::Permissions::from_mode(new_mode)) {
                 Ok(()) => status.set_label("Permissions updated."),
@@ -193,10 +218,7 @@ fn build_permissions_tab(item: &ItemObject) -> gtk::Widget {
 // OPEN WITH
 // ============================================================================
 
-fn build_open_with_tab(
-    window: &gtk::ApplicationWindow,
-    item: &ItemObject,
-) -> gtk::Widget {
+fn build_open_with_tab(window: &gtk::ApplicationWindow, item: &ItemObject) -> gtk::Widget {
     let mime = item.mime_type();
     let apps = crate::mime::applications::apps_for_mime(&mime);
 

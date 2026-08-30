@@ -3,7 +3,6 @@ use gtk::glib;
 use gtk::prelude::*;
 use std::path::{Path, PathBuf};
 
-
 pub fn thumbnail_path_for(path: &Path, mime: &str, size: u64) -> String {
     if !crate::config::settings::thumbnails_enabled() {
         return String::new();
@@ -21,7 +20,6 @@ pub fn thumbnail_path_for(path: &Path, mime: &str, size: u64) -> String {
 
     String::new()
 }
-
 
 fn freedesktop_thumbnail_path(path: &Path) -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;

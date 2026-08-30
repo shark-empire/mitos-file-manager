@@ -70,7 +70,6 @@ pub fn show(parent: &ApplicationWindow, refresh_main: Rc<dyn Fn()>) {
                 return;
             }
 
-
             if let Err(err) = trash::empty() {
                 dialogs::show_error(&window, &format!("Could not empty trash: {err}"));
             }

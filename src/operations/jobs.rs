@@ -166,10 +166,7 @@ pub fn start_paste_job(
                     continue;
                 }
 
-                let destination_dir = task
-                    .destination
-                    .parent()
-                    .unwrap_or_else(|| Path::new("/"));
+                let destination_dir = task.destination.parent().unwrap_or_else(|| Path::new("/"));
 
                 if destination_dir.starts_with(source) || source.as_path() == destination_dir {
                     continue;
@@ -209,10 +206,7 @@ pub fn start_paste_job(
     handle
 }
 
-pub fn start_trash_job(
-    paths: Vec<PathBuf>,
-    sender: glib::Sender<JobMessage>,
-) -> JobHandle {
+pub fn start_trash_job(paths: Vec<PathBuf>, sender: glib::Sender<JobMessage>) -> JobHandle {
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
 
@@ -264,10 +258,7 @@ pub fn start_trash_job(
 fn check_cancel_and_pause(cancel: &AtomicBool, pause: &AtomicBool) -> io::Result<()> {
     loop {
         if cancel.load(Ordering::Relaxed) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Cancelled",
-            ));
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
         }
 
         if !pause.load(Ordering::Relaxed) {
@@ -283,10 +274,7 @@ fn calculate_size_for_tasks(tasks: &[PasteTask], cancel: &AtomicBool) -> io::Res
 
     for task in tasks {
         if cancel.load(Ordering::Relaxed) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Cancelled",
-            ));
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
         }
 
         total += path_size(&task.source, cancel)?;
@@ -297,10 +285,7 @@ fn calculate_size_for_tasks(tasks: &[PasteTask], cancel: &AtomicBool) -> io::Res
 
 fn path_size(path: &Path, cancel: &AtomicBool) -> io::Result<u64> {
     if cancel.load(Ordering::Relaxed) {
-        return Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Cancelled",
-        ));
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
     }
 
     let metadata = fs::symlink_metadata(path)?;
@@ -310,10 +295,7 @@ fn path_size(path: &Path, cancel: &AtomicBool) -> io::Result<u64> {
 
         for entry in fs::read_dir(path)? {
             if cancel.load(Ordering::Relaxed) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Cancelled",
-                ));
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
             }
 
             let entry = entry?;

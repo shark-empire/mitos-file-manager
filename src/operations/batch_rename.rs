@@ -258,4 +258,3 @@ fn check_cancel_and_pause(cancel: &AtomicBool, pause: &AtomicBool) -> std::io::R
         thread::sleep(Duration::from_millis(50));
     }
 }
-

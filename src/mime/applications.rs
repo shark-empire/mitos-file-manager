@@ -14,8 +14,7 @@ pub fn default_app_for_mime(mime: &str) -> Option<gio::AppInfo> {
 
 /// Set an application as the default for a MIME type.
 pub fn set_default_app(app: &gio::AppInfo, mime: &str) -> Result<(), String> {
-    app.set_as_default_for_type(mime)
-        .map_err(|e| e.to_string())
+    app.set_as_default_for_type(mime).map_err(|e| e.to_string())
 }
 
 /// Launch an application with a file.

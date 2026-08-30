@@ -19,14 +19,15 @@ impl WatcherManager {
         self.watcher = None;
 
         let sender = self.sender.clone();
-        let mut watcher = match notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            if res.is_ok() {
-                let _ = sender.send(());
-            }
-        }) {
-            Ok(w) => w,
-            Err(_) => return,
-        };
+        let mut watcher =
+            match notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+                if res.is_ok() {
+                    let _ = sender.send(());
+                }
+            }) {
+                Ok(w) => w,
+                Err(_) => return,
+            };
 
         // Watch the directory non-recursively (just the current folder)
         let _ = watcher.watch(path, RecursiveMode::NonRecursive);

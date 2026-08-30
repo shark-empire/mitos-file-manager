@@ -2,9 +2,7 @@ use crate::filesystem::directory;
 use crate::ui::grid_view;
 use gtk::gio;
 use gtk::prelude::*;
-use gtk::{
-    Box as GtkBox, Button, Entry, GridView, Label, ListBox, Orientation, ScrolledWindow,
-};
+use gtk::{Box as GtkBox, Button, Entry, GridView, Label, ListBox, Orientation, ScrolledWindow};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;

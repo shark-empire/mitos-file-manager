@@ -26,10 +26,9 @@ pub fn for_path(path: &Path) -> FileMetadata {
 
     let modified = metadata.as_ref().and_then(|m| m.modified().ok());
 
-    let permissions = metadata.as_ref().map_or_else(
-        || "?".to_string(),
-        |m| permission_string(&m.permissions()),
-    );
+    let permissions = metadata
+        .as_ref()
+        .map_or_else(|| "?".to_string(), |m| permission_string(&m.permissions()));
 
     FileMetadata {
         size,

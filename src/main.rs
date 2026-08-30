@@ -12,10 +12,10 @@ mod portal;
 mod search;
 mod ui;
 
-use gtk::prelude::*;
-use gtk::gio;
 use gtk::gdk;
+use gtk::gio;
 use gtk::glib;
+use gtk::prelude::*;
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Entry, Label, ListBox,
     Notebook, Orientation, ScrolledWindow, SearchEntry, SelectionMode,
@@ -41,16 +41,12 @@ use ui::grid_view;
 use ui::item_object::ItemObject;
 use ui::sidebar;
 
-
-
-
 static VIEW_MODE_LIST: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static TYPEAHEAD_BUFFER: std::cell::RefCell<(String, std::time::Instant)> =
         std::cell::RefCell::new((String::new(), std::time::Instant::now()));
 }
-
 
 enum JobRequest {
     Paste {
@@ -106,7 +102,6 @@ fn main() {
     let _ = app.run();
 }
 
-
 fn get_active_widgets(
     notebook: &Notebook,
 ) -> Option<(
@@ -159,7 +154,6 @@ fn open_file_default(path: &PathBuf) {
         let _ = Command::new("xdg-open").arg(path).spawn();
     }
 }
-
 
 fn start_paste_job_ui(
     window: &ApplicationWindow,
@@ -530,7 +524,6 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
             }
         }
 
-
         if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
             refresh_tab(
                 &tab_state,
@@ -611,9 +604,7 @@ fn refresh_tab(
         };
 
         stack.set_visible_child_name(if item_count == 0 { "empty" } else { mode });
-
     }
-
 
     if let Some(win) = location_entry.data::<gtk::ApplicationWindow>("main-window") {
         sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
@@ -662,17 +653,14 @@ fn add_tab(
     view_stack.set_vexpand(true);
     view_stack.add_named(&scrolled, Some("files"));
     view_stack.add_named(&empty_label, Some("empty"));
-   
+
     let list_view = ui::list_view::create_list_view(&selection);
     view_stack.add_named(&list_view, Some("list"));
 
-
-    
     let page_widget = GtkBox::new(Orientation::Vertical, 0);
     page_widget.append(&view_stack);
 
     store.set_data("view-stack", view_stack.clone());
-
 
     page_widget.set_data("tab-state", tab_state.clone());
     page_widget.set_data("grid-view", grid.clone());
@@ -795,11 +783,10 @@ fn add_tab(
                                         &format!("Failed to open: {}", err),
                                     );
                                 }
-                        } else {
-                            let path = item_obj.get_path();
-                            open_file_default(&path);
-                        }
-
+                            } else {
+                                let path = item_obj.get_path();
+                                open_file_default(&path);
+                            }
                         }
                     }
                 }
@@ -942,7 +929,7 @@ fn add_tab(
         grid.add_controller(right_click);
     }
 
-        // ---- List view: activate (double click / Enter) ----
+    // ---- List view: activate (double click / Enter) ----
     {
         let notebook = notebook.clone();
         let ctx = ctx.clone();
@@ -1087,7 +1074,11 @@ fn add_tab(
                 return false;
             }
 
-            let operation = if is_copy { PendingOp::Copy } else { PendingOp::Move };
+            let operation = if is_copy {
+                PendingOp::Copy
+            } else {
+                PendingOp::Move
+            };
 
             start_paste_job_ui(
                 &window_error,
@@ -1108,7 +1099,6 @@ fn add_tab(
 
         list_view.add_controller(drop_target);
     }
-
 
     refresh_tab(
         &tab_state,
@@ -1141,26 +1131,23 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
     let ctx = Rc::new(RefCell::new(AppContext::new()));
 
-// After loading settings
-config::settings::load();
+    // After loading settings
+    config::settings::load();
 
-// Start config watcher
-let (config_tx, config_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
-let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
-
-
-
+    // Start config watcher
+    let (config_tx, config_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
+    let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
 
     let theme_mode = config::settings::theme_mode();
     ui::theme::apply_theme(&window.display(), theme_mode);
 
     let portal_rx = portal::service::start();
 
-
-
     // Setup Inotify Channel
     let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
-    let watcher_manager = Rc::new(RefCell::new(filesystem::watcher::WatcherManager::new(sender)));
+    let watcher_manager = Rc::new(RefCell::new(filesystem::watcher::WatcherManager::new(
+        sender,
+    )));
 
     let toolbar1 = GtkBox::new(Orientation::Horizontal, 6);
     let back_btn = Button::with_label("Back");
@@ -1260,7 +1247,6 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
     sidebar_scrolled.set_vexpand(true);
 
     let (tree_list, tree_state) = ui::tree_view::build(locations::home_dir());
-
 
     let tree_scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -1365,43 +1351,42 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
         );
     }
 
-
     // Poll for config changes
-{
-    let notebook = notebook.clone();
-    let ctx = ctx.clone();
-    let location_entry = location_entry.clone();
-    let search_entry = search_entry.clone();
-    let hidden_toggle = hidden_toggle.clone();
-    let sidebar_list = sidebar_list.clone();
-    let watcher_manager = watcher_manager.clone();
+    {
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
 
-    config_rx.attach(None, move |shared_config| {
-        // Apply theme if changed
-        let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
-        if let Some(display) = gdk::Display::default() {
-            crate::ui::theme::apply_theme(&display, theme_mode);
-        }
+        config_rx.attach(None, move |shared_config| {
+            // Apply theme if changed
+            let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
+            if let Some(display) = gdk::Display::default() {
+                crate::ui::theme::apply_theme(&display, theme_mode);
+            }
 
-        // Refresh current tab
-        if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-            tab_state.borrow_mut().show_hidden = shared_config.show_hidden_files;
-            
-            refresh_tab(
-                &tab_state,
-                &store,
-                &ctx,
-                &location_entry,
-                &search_entry,
-                &hidden_toggle,
-                &sidebar_list,
-            );
-            update_watcher(&notebook, &watcher_manager);
-        }
+            // Refresh current tab
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                tab_state.borrow_mut().show_hidden = shared_config.show_hidden_files;
 
-        glib::ControlFlow::Continue
-    });
-}
+                refresh_tab(
+                    &tab_state,
+                    &store,
+                    &ctx,
+                    &location_entry,
+                    &search_entry,
+                    &hidden_toggle,
+                    &sidebar_list,
+                );
+                update_watcher(&notebook, &watcher_manager);
+            }
+
+            glib::ControlFlow::Continue
+        });
+    }
 
     // --- Inotify Receiver ---
     {
@@ -1463,7 +1448,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
             let alt = modifier.contains(gtk::gdk::ModifierType::ALT_MASK);
             let active = get_active_widgets(&notebook);
 
-                        // Type-ahead: typing letters jumps to matching files
+            // Type-ahead: typing letters jumps to matching files
             if !ctrl && !alt {
                 if let Some(ch) = key.to_unicode() {
                     if ch.is_alphanumeric() || matches!(ch, '.' | '-' | '_') {
@@ -1474,7 +1459,6 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                     }
                 }
             }
-
 
             match key {
                 k if ctrl && k == gtk::gdk::Key::c => {
@@ -1883,7 +1867,6 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                 }
             }
         });
-
     }
 
     {
@@ -1934,7 +1917,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
         });
     }
 
-        // Tree View Row Activation
+    // Tree View Row Activation
     {
         let notebook = notebook.clone();
         let ctx = ctx.clone();
@@ -1970,7 +1953,6 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
             }
         });
     }
-
 
     // New Window Button
     {
@@ -2190,47 +2172,41 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
 
         new_folder_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                dialogs::show_text_dialog(
-                    &window_parent,
-                    "New Folder",
-                    "New Folder",
-                    "Create",
-                    {
-                        let window_error = window_parent.clone();
-                        let tab_state = tab_state.clone();
-                        let store = store.clone();
-                        let ctx = ctx.clone();
-                        let location_entry = location_entry.clone();
-                        let search_entry = search_entry.clone();
-                        let hidden_toggle = hidden_toggle.clone();
-                        let sidebar_list = sidebar_list.clone();
-                        let watcher_manager = watcher_manager.clone();
-                        let notebook = notebook.clone();
+                dialogs::show_text_dialog(&window_parent, "New Folder", "New Folder", "Create", {
+                    let window_error = window_parent.clone();
+                    let tab_state = tab_state.clone();
+                    let store = store.clone();
+                    let ctx = ctx.clone();
+                    let location_entry = location_entry.clone();
+                    let search_entry = search_entry.clone();
+                    let hidden_toggle = hidden_toggle.clone();
+                    let sidebar_list = sidebar_list.clone();
+                    let watcher_manager = watcher_manager.clone();
+                    let notebook = notebook.clone();
 
-                        move |name| {
-                            if name.is_empty() {
-                                return;
-                            }
-                            let parent = tab_state.borrow().current.clone();
-                            if let Err(err) = operations::create::create_folder(&parent, &name) {
-                                dialogs::show_error(
-                                    &window_error,
-                                    &format!("Could not create folder: {err}"),
-                                );
-                            }
-                            refresh_tab(
-                                &tab_state,
-                                &store,
-                                &ctx,
-                                &location_entry,
-                                &search_entry,
-                                &hidden_toggle,
-                                &sidebar_list,
-                            );
-                            update_watcher(&notebook, &watcher_manager);
+                    move |name| {
+                        if name.is_empty() {
+                            return;
                         }
-                    },
-                );
+                        let parent = tab_state.borrow().current.clone();
+                        if let Err(err) = operations::create::create_folder(&parent, &name) {
+                            dialogs::show_error(
+                                &window_error,
+                                &format!("Could not create folder: {err}"),
+                            );
+                        }
+                        refresh_tab(
+                            &tab_state,
+                            &store,
+                            &ctx,
+                            &location_entry,
+                            &search_entry,
+                            &hidden_toggle,
+                            &sidebar_list,
+                        );
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                });
             }
         });
     }
@@ -2247,47 +2223,41 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
 
         new_file_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                dialogs::show_text_dialog(
-                    &window_parent,
-                    "New File",
-                    "new-file.txt",
-                    "Create",
-                    {
-                        let window_error = window_parent.clone();
-                        let tab_state = tab_state.clone();
-                        let store = store.clone();
-                        let ctx = ctx.clone();
-                        let location_entry = location_entry.clone();
-                        let search_entry = search_entry.clone();
-                        let hidden_toggle = hidden_toggle.clone();
-                        let sidebar_list = sidebar_list.clone();
-                        let watcher_manager = watcher_manager.clone();
-                        let notebook = notebook.clone();
+                dialogs::show_text_dialog(&window_parent, "New File", "new-file.txt", "Create", {
+                    let window_error = window_parent.clone();
+                    let tab_state = tab_state.clone();
+                    let store = store.clone();
+                    let ctx = ctx.clone();
+                    let location_entry = location_entry.clone();
+                    let search_entry = search_entry.clone();
+                    let hidden_toggle = hidden_toggle.clone();
+                    let sidebar_list = sidebar_list.clone();
+                    let watcher_manager = watcher_manager.clone();
+                    let notebook = notebook.clone();
 
-                        move |name| {
-                            if name.is_empty() {
-                                return;
-                            }
-                            let parent = tab_state.borrow().current.clone();
-                            if let Err(err) = operations::create::create_file(&parent, &name) {
-                                dialogs::show_error(
-                                    &window_error,
-                                    &format!("Could not create file: {err}"),
-                                );
-                            }
-                            refresh_tab(
-                                &tab_state,
-                                &store,
-                                &ctx,
-                                &location_entry,
-                                &search_entry,
-                                &hidden_toggle,
-                                &sidebar_list,
-                            );
-                            update_watcher(&notebook, &watcher_manager);
+                    move |name| {
+                        if name.is_empty() {
+                            return;
                         }
-                    },
-                );
+                        let parent = tab_state.borrow().current.clone();
+                        if let Err(err) = operations::create::create_file(&parent, &name) {
+                            dialogs::show_error(
+                                &window_error,
+                                &format!("Could not create file: {err}"),
+                            );
+                        }
+                        refresh_tab(
+                            &tab_state,
+                            &store,
+                            &ctx,
+                            &location_entry,
+                            &search_entry,
+                            &hidden_toggle,
+                            &sidebar_list,
+                        );
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                });
             }
         });
     }
@@ -2330,10 +2300,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                             return;
                         }
                         if let Err(err) = operations::rename::rename_path(&source, &name) {
-                            dialogs::show_error(
-                                &window_error,
-                                &format!("Could not rename: {err}"),
-                            );
+                            dialogs::show_error(&window_error, &format!("Could not rename: {err}"));
                         }
                         refresh_tab(
                             &tab_state,
@@ -2361,8 +2328,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                 if selected.is_empty() {
                     return;
                 }
-                let paths: Vec<PathBuf> =
-                    selected.iter().map(|item| item.get_path()).collect();
+                let paths: Vec<PathBuf> = selected.iter().map(|item| item.get_path()).collect();
                 ctx.borrow_mut().pending = Some((PendingOp::Copy, paths));
             }
         });
@@ -2378,8 +2344,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                 if selected.is_empty() {
                     return;
                 }
-                let paths: Vec<PathBuf> =
-                    selected.iter().map(|item| item.get_path()).collect();
+                let paths: Vec<PathBuf> = selected.iter().map(|item| item.get_path()).collect();
                 ctx.borrow_mut().pending = Some((PendingOp::Move, paths));
             }
         });
@@ -2436,8 +2401,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                 if selected.is_empty() {
                     return;
                 }
-                let paths: Vec<PathBuf> =
-                    selected.iter().map(|item| item.get_path()).collect();
+                let paths: Vec<PathBuf> = selected.iter().map(|item| item.get_path()).collect();
                 start_trash_job_ui(
                     &window_error,
                     &notebook,
@@ -2528,7 +2492,6 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
             }
         });
     }
-
 
     {
         let location_entry = location_entry.clone();
@@ -2673,10 +2636,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
         glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
             while let Ok(request) = desktop_rx.try_recv() {
                 match request {
-                    desktop::service::DesktopRequest::SetWallpaper {
-                        path,
-                        response_tx,
-                    } => {
+                    desktop::service::DesktopRequest::SetWallpaper { path, response_tx } => {
                         // Store wallpaper path in MITOS config for the compositor to read.
                         let config_dir = dirs::config_dir()
                             .unwrap_or_else(|| PathBuf::from("."))
@@ -2713,9 +2673,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                         }
                     }
 
-                    desktop::service::DesktopRequest::OpenDesktopSettings {
-                        response_tx,
-                    } => {
+                    desktop::service::DesktopRequest::OpenDesktopSettings { response_tx } => {
                         // Placeholder: in the future this opens the MITOS Settings app.
                         let _ = response_tx.send(Ok(()));
                     }
@@ -2726,21 +2684,14 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
         });
     }
 
-
     // Portal Receiver
     {
         let window = window.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
             while let Ok(request) = portal_rx.try_recv() {
                 match request {
-                    portal::service::PortalRequest::OpenFile {
-                        title,
-                        response_tx,
-                    } => {
-                        let dialog = gtk::FileDialog::builder()
-                            .title(&title)
-                            .modal(true)
-                            .build();
+                    portal::service::PortalRequest::OpenFile { title, response_tx } => {
+                        let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
                         let response_tx = response_tx.clone();
                         dialog.open(Some(&window), None, move |result| match result {
                             Ok(file) => {
@@ -2752,7 +2703,8 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                                     .send(portal::service::PortalResponse::Selected(vec![path]));
                             }
                             Err(_) => {
-                                let _ = response_tx.send(portal::service::PortalResponse::Cancelled);
+                                let _ =
+                                    response_tx.send(portal::service::PortalResponse::Cancelled);
                             }
                         });
                     }
@@ -2777,15 +2729,13 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                                     .send(portal::service::PortalResponse::Selected(vec![path]));
                             }
                             Err(_) => {
-                                let _ = response_tx.send(portal::service::PortalResponse::Cancelled);
+                                let _ =
+                                    response_tx.send(portal::service::PortalResponse::Cancelled);
                             }
                         });
                     }
                     portal::service::PortalRequest::OpenFolder { title, response_tx } => {
-                        let dialog = gtk::FileDialog::builder()
-                            .title(&title)
-                            .modal(true)
-                            .build();
+                        let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
                         let response_tx = response_tx.clone();
                         dialog.select_folder(Some(&window), None, move |result| match result {
                             Ok(file) => {
@@ -2797,7 +2747,8 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
                                     .send(portal::service::PortalResponse::Selected(vec![path]));
                             }
                             Err(_) => {
-                                let _ = response_tx.send(portal::service::PortalResponse::Cancelled);
+                                let _ =
+                                    response_tx.send(portal::service::PortalResponse::Cancelled);
                             }
                         });
                     }
@@ -2865,9 +2816,9 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
     compress_btn.set_sensitive(!items.is_empty());
     extract_btn.set_sensitive(
         count == 1
-            && single_item
-                .as_ref()
-                .map_or(false, |item| operations::archive::is_supported_archive(&item.get_path())),
+            && single_item.as_ref().map_or(false, |item| {
+                operations::archive::is_supported_archive(&item.get_path())
+            }),
     );
     rename_btn.set_sensitive(count == 1);
     batch_rename_btn.set_sensitive(count >= 2);
@@ -2935,7 +2886,9 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
 
         open_btn.connect_clicked(move |_| {
             popover.popdown();
-            let Some(item) = item.clone() else { return; };
+            let Some(item) = item.clone() else {
+                return;
+            };
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                 if item.is_dir() {
                     navigate_to(&tab_state, item.get_path());
@@ -2952,8 +2905,13 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
                     let path = item.get_path();
                     let mime = item.mime_type();
                     if let Some(app) = crate::mime::applications::default_app_for_mime(&mime) {
-                        if let Err(err) = crate::mime::applications::launch_app_with_file(&app, &path) {
-                            crate::ui::dialogs::show_error(&window, &format!("Failed to open: {}", err));
+                        if let Err(err) =
+                            crate::mime::applications::launch_app_with_file(&app, &path)
+                        {
+                            crate::ui::dialogs::show_error(
+                                &window,
+                                &format!("Failed to open: {}", err),
+                            );
                         }
                     } else {
                         let _ = Command::new("xdg-open").arg(&path).spawn();
@@ -2976,7 +2934,9 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
 
         open_tab_btn.connect_clicked(move |_| {
             popover.popdown();
-            let Some(item) = single_item.clone() else { return; };
+            let Some(item) = single_item.clone() else {
+                return;
+            };
             if item.is_dir() {
                 add_tab(
                     &notebook,
@@ -2999,14 +2959,19 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
         let single_item = single_item.clone();
 
         open_with_btn.connect_clicked(move |_| {
-            let Some(item) = single_item.clone() else { return; };
+            let Some(item) = single_item.clone() else {
+                return;
+            };
             let path = item.get_path();
             let mime = item.mime_type();
             let apps = crate::mime::applications::apps_for_mime(&mime);
             let display_apps = crate::mime::applications::app_display_names(&apps);
 
             if display_apps.is_empty() {
-                crate::ui::dialogs::show_error(&window, &format!("No applications found for MIME type: {}", mime));
+                crate::ui::dialogs::show_error(
+                    &window,
+                    &format!("No applications found for MIME type: {}", mime),
+                );
                 return;
             }
 
@@ -3033,8 +2998,13 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
 
                 btn.connect_clicked(move |_| {
                     sub_popover.popdown();
-                    if let Err(err) = crate::mime::applications::launch_app_with_file(&app_info, &path) {
-                        crate::ui::dialogs::show_error(&window, &format!("Failed to open: {}", err));
+                    if let Err(err) =
+                        crate::mime::applications::launch_app_with_file(&app_info, &path)
+                    {
+                        crate::ui::dialogs::show_error(
+                            &window,
+                            &format!("Failed to open: {}", err),
+                        );
                     }
                 });
                 sub_box.append(&btn);
@@ -3107,8 +3077,12 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
 
         extract_btn.connect_clicked(move |_| {
             popover.popdown();
-            let Some(item) = archive_item.clone() else { return; };
-            if !operations::archive::is_supported_archive(&item.get_path()) { return; }
+            let Some(item) = archive_item.clone() else {
+                return;
+            };
+            if !operations::archive::is_supported_archive(&item.get_path()) {
+                return;
+            }
             if let Some((tab_state, _, _, _)) = get_active_widgets(&notebook) {
                 let destination_dir = tab_state.borrow().current.clone();
                 start_extract_archive_job_ui(
@@ -3156,8 +3130,9 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
 
         copy_to_split_btn.connect_clicked(move |_| {
             popover.popdown();
-            if let Some(split_state) = location_entry
-                .data::<std::rc::Rc<std::cell::RefCell<ui::split_pane::SplitPaneState>>>("split-state")
+            if let Some(split_state) = location_entry.data::<std::rc::Rc<
+                std::cell::RefCell<ui::split_pane::SplitPaneState>,
+            >>("split-state")
             {
                 let dest = split_state.borrow().current.clone();
                 for source in &paths {
@@ -3189,7 +3164,9 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
 
         rename_btn.connect_clicked(move |_| {
             popover.popdown();
-            let Some(item) = single_item.clone() else { return; };
+            let Some(item) = single_item.clone() else {
+                return;
+            };
             let source = item.get_path();
             let initial_name = item.name();
 
@@ -3204,7 +3181,9 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
                 let watcher_manager = watcher_manager.clone();
 
                 move |name| {
-                    if name.is_empty() { return; }
+                    if name.is_empty() {
+                        return;
+                    }
                     if let Err(err) = operations::rename::rename_path(&source, &name) {
                         dialogs::show_error(&window, &format!("Could not rename: {err}"));
                     }
@@ -3308,7 +3287,7 @@ fn show_context_menu<W: glib::IsA<gtk::Widget>>(
             ui::properties::show(&window, &item);
         });
     }
-    
+
     popover.popup();
 }
 
@@ -3440,7 +3419,10 @@ fn show_default_app_picker(
                 if index >= 0 && (index as usize) < apps.len() {
                     let (_, app_info) = &apps[index as usize];
                     if let Err(err) = crate::mime::applications::set_default_app(app_info, &mime) {
-                        crate::ui::dialogs::show_error(&window, &format!("Failed to set default: {}", err));
+                        crate::ui::dialogs::show_error(
+                            &window,
+                            &format!("Failed to set default: {}", err),
+                        );
                     }
                 }
             }
@@ -3460,7 +3442,6 @@ fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
         app.send_notification(Some("mitos-files-job"), &notification);
     }
 }
-
 
 fn filesystem_free_string(path: &std::path::Path) -> String {
     let file = gio::File::for_path(path);
@@ -3496,7 +3477,9 @@ fn typeahead_select(
 
         for i in 0..store.n_items() {
             let Some(obj) = store.item(i) else { continue };
-            let Some(item) = obj.downcast_ref::<ItemObject>() else { continue };
+            let Some(item) = obj.downcast_ref::<ItemObject>() else {
+                continue;
+            };
 
             if item.name().to_lowercase().starts_with(&query) {
                 selection.set_selected(i);
@@ -3510,4 +3493,3 @@ fn typeahead_select(
         }
     });
 }
-

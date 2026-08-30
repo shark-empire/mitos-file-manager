@@ -1,8 +1,6 @@
 use crate::config::settings;
 use gtk::prelude::*;
-use gtk::{
-    ApplicationWindow, Box as GtkBox, Button, Grid, Label, Orientation, SpinButton, Switch,
-};
+use gtk::{ApplicationWindow, Box as GtkBox, Button, Grid, Label, Orientation, SpinButton, Switch};
 use std::rc::Rc;
 
 pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
@@ -73,7 +71,7 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     grid.attach(&confirm_label, 0, 3, 1, 1);
     grid.attach(&confirm_switch, 1, 3, 1, 1);
 
-        // Theme mode
+    // Theme mode
     let theme_label = Label::new(Some("Theme"));
     theme_label.set_halign(gtk::Align::Start);
     theme_label.set_hexpand(true);
@@ -86,7 +84,6 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
 
     grid.attach(&theme_label, 0, 4, 1, 1);
     grid.attach(&theme_dropdown, 1, 4, 1, 1);
-
 
     // Buttons
     let button_box = GtkBox::new(Orientation::Horizontal, 8);
@@ -117,7 +114,11 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
         let apply = apply_changes.clone();
 
         apply_btn.connect_clicked(move |_| {
-            let theme = if theme_dropdown.selected() == 1 { "dark" } else { "light" };
+            let theme = if theme_dropdown.selected() == 1 {
+                "dark"
+            } else {
+                "light"
+            };
 
             settings::apply_and_save(
                 hidden_switch.is_active(),
@@ -131,7 +132,6 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
 
             window.close();
         });
-
     }
 
     window.present();

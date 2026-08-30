@@ -1,5 +1,5 @@
-use gtk::prelude::*;
 use gtk::gdk;
+use gtk::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ThemeMode {

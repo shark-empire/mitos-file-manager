@@ -39,7 +39,9 @@ pub fn start() -> mpsc::Receiver<PortalRequest> {
     request_rx
 }
 
-fn run_dbus_service(request_tx: mpsc::Sender<PortalRequest>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn run_dbus_service(
+    request_tx: mpsc::Sender<PortalRequest>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use zbus::blocking::Connection;
     use zbus::interface;
 

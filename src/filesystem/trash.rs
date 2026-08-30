@@ -53,8 +53,7 @@ pub fn list() -> Vec<TrashItem> {
             continue;
         }
 
-        let original_path = parse_original_path(&info_path)
-            .unwrap_or_else(|| file_path.clone());
+        let original_path = parse_original_path(&info_path).unwrap_or_else(|| file_path.clone());
 
         items.push(TrashItem {
             trash_name,

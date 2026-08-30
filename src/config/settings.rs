@@ -11,7 +11,6 @@ static THUMBNAIL_MAX_MB: AtomicU64 = AtomicU64::new(50);
 static CONFIRM_TRASH: AtomicBool = AtomicBool::new(true);
 static THEME_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Settings {
@@ -21,7 +20,6 @@ pub struct Settings {
     pub confirm_trash: bool,
     pub theme_mode: String,
 }
-
 
 impl Default for Settings {
     fn default() -> Self {
@@ -35,13 +33,12 @@ impl Default for Settings {
     }
 }
 
-
 pub fn load() -> Settings {
     let settings = read_from_disk().unwrap_or_default();
 
     // Also load from shared config
     let shared = SharedConfig::load();
-    
+
     let merged = Settings {
         show_hidden_files: shared.show_hidden_files,
         enable_thumbnails: shared.enable_thumbnails,
@@ -53,7 +50,6 @@ pub fn load() -> Settings {
     apply_globals(&merged);
     merged
 }
-
 
 pub fn current() -> Settings {
     Settings {
@@ -93,7 +89,6 @@ pub fn apply_and_save(
     let _ = shared.save();
 }
 
-
 pub fn set_show_hidden(value: bool) {
     SHOW_HIDDEN.store(value, Ordering::Relaxed);
     save_current();
@@ -129,7 +124,6 @@ fn apply_globals(settings: &Settings) {
     THEME_MODE.store(dark, Ordering::Relaxed);
 }
 
-
 fn save_current() {
     let _ = write_to_disk(&current());
 }
@@ -158,9 +152,8 @@ fn write_to_disk(settings: &Settings) -> std::io::Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let json = serde_json::to_string_pretty(settings).map_err(|err| {
-        std::io::Error::new(std::io::ErrorKind::Other, err)
-    })?;
+    let json = serde_json::to_string_pretty(settings)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
 
     fs::write(path, json)
 }
@@ -176,4 +169,3 @@ pub fn theme_mode() -> crate::ui::theme::ThemeMode {
 pub fn is_dark_theme() -> bool {
     THEME_MODE.load(Ordering::Relaxed)
 }
-

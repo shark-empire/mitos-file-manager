@@ -41,14 +41,8 @@ pub fn load_plugins() -> Vec<(PathBuf, PluginManifest)> {
     plugins
 }
 
-pub fn execute_plugin_action(
-    command: &str,
-    file_paths: &[PathBuf],
-) -> Result<(), String> {
-    let paths_str: Vec<String> = file_paths
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
+pub fn execute_plugin_action(command: &str, file_paths: &[PathBuf]) -> Result<(), String> {
+    let paths_str: Vec<String> = file_paths.iter().map(|p| p.display().to_string()).collect();
 
     let full_command = command.replace("{files}", &paths_str.join(" "));
 

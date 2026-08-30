@@ -24,9 +24,7 @@ impl History {
         self.stack.clear();
     }
 
-    
-
-        pub fn go_back(&mut self, current: &PathBuf) -> Option<PathBuf> {
+    pub fn go_back(&mut self, current: &PathBuf) -> Option<PathBuf> {
         if let Some(prev) = self.back_stack.pop() {
             self.forward_stack.push(current.clone());
             Some(prev)
@@ -35,7 +33,7 @@ impl History {
         }
     }
 
-        pub fn go_forward(&mut self, current: &PathBuf) -> Option<PathBuf> {
+    pub fn go_forward(&mut self, current: &PathBuf) -> Option<PathBuf> {
         if let Some(next) = self.forward_stack.pop() {
             self.back_stack.push(current.clone());
             Some(next)

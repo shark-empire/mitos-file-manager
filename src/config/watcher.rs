@@ -23,7 +23,9 @@ impl ConfigWatcher {
         })
         .ok()?;
 
-        watcher.watch(&config_path, RecursiveMode::NonRecursive).ok()?;
+        watcher
+            .watch(&config_path, RecursiveMode::NonRecursive)
+            .ok()?;
 
         Some(Self { _watcher: watcher })
     }
@@ -36,7 +38,10 @@ fn config_path() -> Option<PathBuf> {
         }
     }
 
-    std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".config").join("mitos").join("home.conf"))
+    std::env::var("HOME").ok().map(|home| {
+        PathBuf::from(home)
+            .join(".config")
+            .join("mitos")
+            .join("home.conf")
+    })
 }

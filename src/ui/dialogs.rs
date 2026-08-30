@@ -152,4 +152,3 @@ pub fn choose_conflict_policy(
 
     result.get()
 }
-

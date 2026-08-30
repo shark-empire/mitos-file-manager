@@ -93,11 +93,7 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
     view
 }
 
-fn text_column<F, S>(
-    title: &str,
-    text: F,
-    cmp: S,
-) -> gtk::ColumnViewColumn
+fn text_column<F, S>(title: &str, text: F, cmp: S) -> gtk::ColumnViewColumn
 where
     F: Fn(&ItemObject) -> String + 'static,
     S: Fn(&ItemObject, &ItemObject) -> std::cmp::Ordering + 'static,

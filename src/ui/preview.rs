@@ -1,7 +1,6 @@
 use gtk::prelude::*;
 use gtk::{
-    Box as GtkBox, Image, Label, Orientation, Picture, ScrolledWindow, Separator, Stack,
-    TextView,
+    Box as GtkBox, Image, Label, Orientation, Picture, ScrolledWindow, Separator, Stack, TextView,
 };
 use std::fs;
 use std::io::Read;
@@ -136,10 +135,18 @@ pub fn update(container: &GtkBox, item: Option<&crate::ui::item_object::ItemObje
 
     widgets.name_label.set_label(&item.name());
     widgets.type_label.set_label(&format!("Type: {}", mime));
-    widgets.size_label.set_label(&format!("Size: {}", item.size_str()));
-    widgets.modified_label.set_label(&format!("Modified: {}", item.modified_str()));
-    widgets.path_label.set_label(&format!("Path: {}", path.display()));
-    widgets.permissions_label.set_label(&format!("Permissions: {}", item.permissions()));
+    widgets
+        .size_label
+        .set_label(&format!("Size: {}", item.size_str()));
+    widgets
+        .modified_label
+        .set_label(&format!("Modified: {}", item.modified_str()));
+    widgets
+        .path_label
+        .set_label(&format!("Path: {}", path.display()));
+    widgets
+        .permissions_label
+        .set_label(&format!("Permissions: {}", item.permissions()));
 
     if mime.starts_with("image/") {
         widgets.image.set_filename(Some(&path));

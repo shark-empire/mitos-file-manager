@@ -27,6 +27,9 @@ pub fn setup_keyboard_help() -> Vec<(String, String)> {
         ("F2".to_string(), "Rename selected file".to_string()),
         ("F5".to_string(), "Refresh current view".to_string()),
         ("Delete".to_string(), "Move to trash".to_string()),
-        ("Enter".to_string(), "Open selected item / Execute search".to_string()),
+        (
+            "Enter".to_string(),
+            "Open selected item / Execute search".to_string(),
+        ),
     ]
 }
