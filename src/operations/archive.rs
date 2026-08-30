@@ -1,7 +1,7 @@
 use crate::operations::jobs::{JobHandle, JobMessage};
 use crate::operations::unique_destination;
-use flate2::read::GzDecoder;
 use async_channel::Sender;
+use flate2::read::GzDecoder;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
