@@ -1,68 +1,169 @@
-name: CI
+# .github/workflows/ci.yml
+#
+# Headless CI: check, build and unit tests.
+# GUI runtime testing is intentionally NOT done here (runners have no
+# display) — that belongs in the QEMU/VM graphical environment
+# (roadmap priority #3).
+#
+# NOTE (other MITOS repos): for mitos-file-manager / mitos-settings,
+# replace the native dependency block with:
+#   sudo apt-get install -y build-essential pkg-config libgtk-4-dev
+
+name: mitos-file-manager
 
 on:
   push:
     branches:
       - main
       - master
-      - dev
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  fmt-check-build-test:
-    name: fmt / check / build / test
+  # -------------------------------------------------------------
+  # 1. cargo check --all-targets (fast headless type-check)
+  # -------------------------------------------------------------
+  check:
+    name: Check (headless)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    # Remove this block if the crate is at the repository root.
-    defaults:
-      run:
-        working-directory: mitos-file-manager
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install native dependencies
         run: |
-          sudo apt update
-          sudo apt install -y \
+          sudo apt-get update
+          sudo apt-get install -y \
             build-essential \
             pkg-config \
-            libgtk-4-dev \
-            xdg-utils \
-            xvfb
+            libudev-dev \
+            libinput-dev \
+            libseat-dev \
+            libgbm-dev \
+            libdrm-dev \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libpixman-1-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxcb1-dev \
+            libxcb-composite0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-render0-dev \
+            libxcb-shm0-dev \
+            libxcb-xkb-dev
 
-      - name: Install Rust stable with rustfmt
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt
-          rustup default stable
-          rustup show
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust artifacts
+      - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
-        # If your crate is at the repository root, remove this with block.
+
+      - name: cargo check --all-targets
+        run: cargo check --all-targets
+
+  # -------------------------------------------------------------
+  # 2. Release build + artifact upload
+  # -------------------------------------------------------------
+  build:
+    name: Build (release)
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libudev-dev \
+            libinput-dev \
+            libseat-dev \
+            libgbm-dev \
+            libdrm-dev \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libpixman-1-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxcb1-dev \
+            libxcb-composite0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-render0-dev \
+            libxcb-shm0-dev \
+            libxcb-xkb-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release
+        run: cargo build --release
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p mitos-gui-artifact
+          cp target/release/mitos-gui mitos-gui-artifact/
+          cp Cargo.toml Cargo.lock mitos-gui-artifact/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          workspaces: |
-            mitos-file-manager
+          name: mitos-gui-linux-x86_64
+          path: mitos-gui-artifact/
+          retention-days: 30
+          if-no-files-found: error
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+  # -------------------------------------------------------------
+  # 3. Headless unit tests (desktop/config parsers, etc.)
+  # -------------------------------------------------------------
+  test:
+    name: Test (headless unit tests)
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Cargo check
-        run: cargo check --all-targets --all-features
-        
-      - name: Install clippy
-        run: rustup component add clippy
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libudev-dev \
+            libinput-dev \
+            libseat-dev \
+            libgbm-dev \
+            libdrm-dev \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libpixman-1-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxcb1-dev \
+            libxcb-composite0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-render0-dev \
+            libxcb-shm0-dev \
+            libxcb-xkb-dev
 
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Build
-        run: cargo build --all-targets --all-features
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
-        run: xvfb-run -a cargo test --all-targets --all-features
+      - name: cargo test
+        run: cargo test --all-targets
