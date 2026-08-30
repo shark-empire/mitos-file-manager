@@ -27,6 +27,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use app::context::AppContext;
 use app::state::TabState;
@@ -39,6 +40,11 @@ use ui::dialogs;
 use ui::grid_view;
 use ui::item_object::ItemObject;
 use ui::sidebar;
+
+
+
+
+static VIEW_MODE_LIST: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static TYPEAHEAD_BUFFER: std::cell::RefCell<(String, std::time::Instant)> =
@@ -598,7 +604,14 @@ fn refresh_tab(
             }
         }
 
-        stack.set_visible_child_name(if item_count == 0 { "empty" } else { "files" });
+        let mode = if VIEW_MODE_LIST.load(Ordering::Relaxed) {
+            "list"
+        } else {
+            "files"
+        };
+
+        stack.set_visible_child_name(if item_count == 0 { "empty" } else { mode });
+
     }
 
 
@@ -649,7 +662,12 @@ fn add_tab(
     view_stack.set_vexpand(true);
     view_stack.add_named(&scrolled, Some("files"));
     view_stack.add_named(&empty_label, Some("empty"));
+   
+    let list_view = ui::list_view::create_list_view(&selection);
+    view_stack.add_named(&list_view, Some("list"));
 
+
+    
     let page_widget = GtkBox::new(Orientation::Vertical, 0);
     page_widget.append(&view_stack);
 
@@ -924,6 +942,174 @@ fn add_tab(
         grid.add_controller(right_click);
     }
 
+        // ---- List view: activate (double click / Enter) ----
+    {
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        list_view.connect_activate(move |view, pos| {
+            let obj = view
+                .model()
+                .and_then(|m| m.item(pos))
+                .and_then(|o| o.downcast::<ItemObject>().ok());
+
+            if let Some(item_obj) = obj {
+                if item_obj.is_dir() {
+                    if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                        navigate_to(&tab_state, item_obj.get_path());
+                        refresh_tab(
+                            &tab_state,
+                            &store,
+                            &ctx,
+                            &location_entry,
+                            &search_entry,
+                            &hidden_toggle,
+                            &sidebar_list,
+                        );
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                } else {
+                    let path = item_obj.get_path();
+                    open_file_default(&path);
+                }
+            }
+        });
+    }
+
+    // ---- List view: right-click context menu ----
+    {
+        let window = window.clone();
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let store = store.clone();
+        let selection = selection.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+        let list_view = list_view.clone();
+
+        let right_click = gtk::GestureClick::new();
+        right_click.set_button(3);
+
+        right_click.connect_pressed(move |_gesture, _n_press, x, y| {
+            let items = grid_view::selected_items(&selection, &store);
+            if !items.is_empty() {
+                show_context_menu(
+                    &window,
+                    &notebook,
+                    &ctx,
+                    &list_view,
+                    &store,
+                    &selection,
+                    &location_entry,
+                    &search_entry,
+                    &hidden_toggle,
+                    &sidebar_list,
+                    &watcher_manager,
+                    items,
+                    x,
+                    y,
+                );
+            }
+        });
+
+        list_view.add_controller(right_click);
+    }
+
+    // ---- List view: drag source ----
+    {
+        let selection = selection.clone();
+        let store = store.clone();
+
+        let drag_source = gtk::DragSource::builder()
+            .actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE)
+            .build();
+
+        drag_source.connect_prepare(move |_source, _x, _y| {
+            let selected = grid_view::selected_items(&selection, &store);
+            if selected.is_empty() {
+                return None;
+            }
+
+            let files: Vec<gtk::gio::File> = selected
+                .iter()
+                .map(|i| gtk::gio::File::for_path(i.get_path()))
+                .collect();
+
+            let file_list = gtk::gdk::FileList::new(&files);
+            Some(gtk::gdk::ContentProvider::for_value(&file_list.to_value()))
+        });
+
+        list_view.add_controller(drag_source);
+    }
+
+    // ---- List view: drop target (into current directory) ----
+    {
+        let window_error = window.clone();
+        let tab_state = tab_state.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+        let notebook = notebook.clone();
+
+        let drop_target = gtk::DropTarget::builder()
+            .type_(gtk::gdk::FileList::static_type())
+            .actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE)
+            .build();
+
+        drop_target.connect_drop(move |target, value, _x, _y| {
+            let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
+                return false;
+            };
+
+            let is_copy = target.current_action() == gtk::gdk::DragAction::COPY;
+            let files = file_list.files();
+            if files.is_empty() {
+                return false;
+            }
+
+            let destination_dir = tab_state.borrow().current.clone();
+            let sources: Vec<PathBuf> = files
+                .iter()
+                .filter_map(|f| f.path().map(PathBuf::from))
+                .collect();
+            if sources.is_empty() {
+                return false;
+            }
+
+            let operation = if is_copy { PendingOp::Copy } else { PendingOp::Move };
+
+            start_paste_job_ui(
+                &window_error,
+                &notebook,
+                &ctx,
+                &location_entry,
+                &search_entry,
+                &hidden_toggle,
+                &sidebar_list,
+                &watcher_manager,
+                operation,
+                sources,
+                destination_dir,
+            );
+
+            true
+        });
+
+        list_view.add_controller(drop_target);
+    }
+
+
     refresh_tab(
         &tab_state,
         &store,
@@ -1013,6 +1199,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
     let rename_btn = Button::with_label("Rename");
     let copy_btn = Button::with_label("Copy");
     let move_btn = Button::with_label("Move");
+    let list_toggle = CheckButton::with_label("List");
     let paste_btn = Button::with_label("Paste");
     let trash_btn = Button::with_label("Trash");
     let open_trash_btn = Button::with_label("Open Trash");
@@ -1032,6 +1219,7 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
     toolbar2.append(&open_trash_btn);
     toolbar2.append(&settings_btn);
     toolbar2.append(&preview_toggle);
+    toolbar2.append(&list_toggle);
     toolbar2.append(&split_toggle);
     toolbar2.append(&tree_toggle);
     toolbar2.append(&hidden_toggle);
@@ -2315,6 +2503,34 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
     }
 
     {
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        list_toggle.connect_toggled(move |toggle| {
+            VIEW_MODE_LIST.store(toggle.is_active(), Ordering::Relaxed);
+
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                refresh_tab(
+                    &tab_state,
+                    &store,
+                    &ctx,
+                    &location_entry,
+                    &search_entry,
+                    &hidden_toggle,
+                    &sidebar_list,
+                );
+                update_watcher(&notebook, &watcher_manager);
+            }
+        });
+    }
+
+
+    {
         let location_entry = location_entry.clone();
         split_toggle.connect_toggled(move |toggle| {
             if let Some(container) = location_entry.data::<gtk::Box>("split-container") {
@@ -2594,11 +2810,11 @@ let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
     window.present();
 }
 
-fn show_context_menu(
+fn show_context_menu<W: glib::IsA<gtk::Widget>>(
     window: &ApplicationWindow,
     notebook: &Notebook,
     ctx: &Rc<RefCell<AppContext>>,
-    grid: &gtk::GridView,
+    parent: &W,
     store: &gio::ListStore,
     selection: &gtk::MultiSelection,
     location_entry: &Entry,
@@ -2620,7 +2836,7 @@ fn show_context_menu(
     let popover = gtk::Popover::new();
     popover.set_has_arrow(true);
     popover.set_autohide(true);
-    popover.set_parent(grid);
+    popover.set_parent(parent);
     popover.set_pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1));
 
     let menu_box = GtkBox::new(Orientation::Vertical, 6);
@@ -3088,22 +3304,11 @@ fn show_context_menu(
 
         properties_btn.connect_clicked(move |_| {
             popover.popdown();
-            let Some(item) = item.clone() else { return; };
-            let message = format!(
-                "Name: {}\nPath: {}\nType: {}\nMIME: {}\nSize: {}\nModified: {}\nPermissions: {}\nSymlink: {}",
-                item.name(),
-                item.get_path().display(),
-                if item.is_dir() { "Folder" } else { "File" },
-                item.mime_type(),
-                item.size_str(),
-                item.modified_str(),
-                item.permissions(),
-                item.is_symlink()
-            );
-            dialogs::show_info(&window, "Properties", &message);
+            let Some(item) = item.clone() else { return };
+            ui::properties::show(&window, &item);
         });
     }
-
+    
     popover.popup();
 }
 
