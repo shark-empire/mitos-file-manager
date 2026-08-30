@@ -1,14 +1,14 @@
 use super::shared::SharedConfig;
+use async_channel::Sender;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
-use std::sync::mpsc;
 
 pub struct ConfigWatcher {
     _watcher: RecommendedWatcher,
 }
 
 impl ConfigWatcher {
-    pub fn start(sender: glib::Sender<SharedConfig>) -> Option<Self> {
+    pub fn start(sender: Sender<SharedConfig>) -> Option<Self> {
         let config_path = config_path()?;
 
         let sender_clone = sender.clone();
@@ -17,7 +17,7 @@ impl ConfigWatcher {
             if let Ok(event) = res {
                 if event.kind.is_modify() || event.kind.is_create() {
                     let config = SharedConfig::load();
-                    let _ = sender_clone.send(config);
+                    let _ = sender_clone.send_blocking(config);
                 }
             }
         })

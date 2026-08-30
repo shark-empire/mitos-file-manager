@@ -57,6 +57,7 @@ pub fn current() -> Settings {
         enable_thumbnails: thumbnails_enabled(),
         thumbnail_max_mb: thumbnail_max_mb(),
         confirm_trash: confirm_trash_enabled(),
+        theme_mode: if is_dark_theme() { "dark" } else { "light" }.to_string(),
     }
 }
 
