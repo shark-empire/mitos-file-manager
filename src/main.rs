@@ -814,7 +814,7 @@ fn add_tab(
                 .map(|item| gtk::gio::File::for_path(item.get_path()))
                 .collect();
 
-            let file_list = gtk::gdk::FileList::new(&files);
+            let file_list = FileList::from_array(&files);
             let provider = gtk::gdk::ContentProvider::for_value(&file_list.to_value());
             Some(provider)
         });
@@ -834,10 +834,7 @@ fn add_tab(
         let watcher_manager = watcher_manager.clone();
         let notebook = notebook.clone();
 
-        let drop_target = gtk::DropTarget::builder()
-            .type_(gtk::gdk::FileList::static_type())
-            .actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE)
-            .build();
+        let drop_target = gtk::DropTarget::new(gtk::gdk::FileList::static_type(), gtk::gdk::DragAction::COPY)
 
         drop_target.connect_drop(move |target, value, _x, _y| {
             let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
@@ -1030,7 +1027,7 @@ fn add_tab(
                 .map(|i| gtk::gio::File::for_path(i.get_path()))
                 .collect();
 
-            let file_list = gtk::gdk::FileList::new(&files);
+            let file_list = FileList::from_array(&files);
             Some(gtk::gdk::ContentProvider::for_value(&file_list.to_value()))
         });
 
@@ -1049,10 +1046,7 @@ fn add_tab(
         let watcher_manager = watcher_manager.clone();
         let notebook = notebook.clone();
 
-        let drop_target = gtk::DropTarget::builder()
-            .type_(gtk::gdk::FileList::static_type())
-            .actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE)
-            .build();
+        let drop_target = gtk::DropTarget::new(gtk::gdk::FileList::static_type(), gtk::gdk::DragAction::COPY)
 
         drop_target.connect_drop(move |target, value, _x, _y| {
             let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
