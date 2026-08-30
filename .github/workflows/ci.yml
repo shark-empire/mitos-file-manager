@@ -1,22 +1,10 @@
-# .github/workflows/ci.yml
-#
-# Headless CI: check, build and unit tests.
-# GUI runtime testing is intentionally NOT done here (runners have no
-# display) — that belongs in the QEMU/VM graphical environment
-# (roadmap priority #3).
-#
-# NOTE (other MITOS repos): for mitos-file-manager / mitos-settings,
-# replace the native dependency block with:
-#   sudo apt-get install -y build-essential pkg-config libgtk-4-dev
-
-name: mitos-file-manager
+name: CI
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [ "main", "master" ]
   pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 env:
@@ -33,29 +21,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install native dependencies
+      - name: Install native dependencies (GTK4)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
             pkg-config \
-            libudev-dev \
-            libinput-dev \
-            libseat-dev \
-            libgbm-dev \
-            libdrm-dev \
-            libegl1-mesa-dev \
-            libgl1-mesa-dev \
-            libpixman-1-dev \
-            libxkbcommon-dev \
-            libwayland-dev \
-            wayland-protocols \
-            libxcb1-dev \
-            libxcb-composite0-dev \
-            libxcb-xfixes0-dev \
-            libxcb-render0-dev \
-            libxcb-shm0-dev \
-            libxcb-xkb-dev
+            libgtk-4-dev \
+            libglib2.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libdbus-1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -67,7 +44,7 @@ jobs:
         run: cargo check --all-targets
 
   # -------------------------------------------------------------
-  # 2. Release build + artifact upload
+  # 2. Release build
   # -------------------------------------------------------------
   build:
     name: Build (release)
@@ -77,29 +54,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install native dependencies
+      - name: Install native dependencies (GTK4)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
             pkg-config \
-            libudev-dev \
-            libinput-dev \
-            libseat-dev \
-            libgbm-dev \
-            libdrm-dev \
-            libegl1-mesa-dev \
-            libgl1-mesa-dev \
-            libpixman-1-dev \
-            libxkbcommon-dev \
-            libwayland-dev \
-            wayland-protocols \
-            libxcb1-dev \
-            libxcb-composite0-dev \
-            libxcb-xfixes0-dev \
-            libxcb-render0-dev \
-            libxcb-shm0-dev \
-            libxcb-xkb-dev
+            libgtk-4-dev \
+            libglib2.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libdbus-1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -110,22 +76,8 @@ jobs:
       - name: cargo build --release
         run: cargo build --release
 
-      - name: Prepare artifact
-        run: |
-          mkdir -p mitos-gui-artifact
-          cp target/release/mitos-gui mitos-gui-artifact/
-          cp Cargo.toml Cargo.lock mitos-gui-artifact/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mitos-gui-linux-x86_64
-          path: mitos-gui-artifact/
-          retention-days: 30
-          if-no-files-found: error
-
   # -------------------------------------------------------------
-  # 3. Headless unit tests (desktop/config parsers, etc.)
+  # 3. Headless unit tests
   # -------------------------------------------------------------
   test:
     name: Test (headless unit tests)
@@ -135,29 +87,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install native dependencies
+      - name: Install native dependencies (GTK4)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
             pkg-config \
-            libudev-dev \
-            libinput-dev \
-            libseat-dev \
-            libgbm-dev \
-            libdrm-dev \
-            libegl1-mesa-dev \
-            libgl1-mesa-dev \
-            libpixman-1-dev \
-            libxkbcommon-dev \
-            libwayland-dev \
-            wayland-protocols \
-            libxcb1-dev \
-            libxcb-composite0-dev \
-            libxcb-xfixes0-dev \
-            libxcb-render0-dev \
-            libxcb-shm0-dev \
-            libxcb-xkb-dev
+            libgtk-4-dev \
+            libglib2.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libdbus-1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
