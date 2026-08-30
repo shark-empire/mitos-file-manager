@@ -126,14 +126,19 @@ fn populate(list: &ListBox, parent: &ApplicationWindow, refresh_main: Rc<dyn Fn(
         let list = list.clone();
         let parent = parent.clone();
         let refresh_main = refresh_main.clone();
+        
 
         restore_btn.connect_clicked(move |_| {
             if let Err(err) = trash::restore(&item) {
                 dialogs::show_error(&parent, &format!("Could not restore item: {err}"));
             }
+            let list_for_closure = list.clone();
+restore_btn.connect_clicked(move |_| {
 
             populate(&list, &parent, refresh_main.clone());
             refresh_main();
+    
+       populate(&list_for_closure, &parent, refresh_main.clone());
         });
 
         row_box.append(&label);
