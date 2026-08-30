@@ -1,13 +1,14 @@
+use async_channel::Sender;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
 
 pub struct WatcherManager {
     watcher: Option<RecommendedWatcher>,
-    sender: glib::Sender<()>,
+    sender: Sender<()>,
 }
 
 impl WatcherManager {
-    pub fn new(sender: glib::Sender<()>) -> Self {
+    pub fn new(sender: Sender<()>) -> Self {
         Self {
             watcher: None,
             sender,
@@ -22,7 +23,7 @@ impl WatcherManager {
         let mut watcher =
             match notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
                 if res.is_ok() {
-                    let _ = sender.send(());
+                    let _ = sender.send_blocking(());
                 }
             }) {
                 Ok(w) => w,
