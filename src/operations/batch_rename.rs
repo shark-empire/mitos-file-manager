@@ -1,5 +1,5 @@
 use crate::operations::jobs::{JobHandle, JobMessage};
-use gtk::glib;
+use async_channel::Sender;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -153,7 +153,7 @@ pub fn validate_renames(renames: &[(PathBuf, PathBuf)]) -> Vec<String> {
 
 pub fn start_batch_rename_job(
     renames: Vec<(PathBuf, PathBuf)>,
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
 ) -> JobHandle {
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
@@ -167,7 +167,7 @@ pub fn start_batch_rename_job(
         let result = (|| -> Result<usize, String> {
             let total = renames.len() as u64;
 
-            let _ = sender.send(JobMessage::Started {
+            let _ = sender.send_blocking(JobMessage::Started {
                 label: "Renaming".to_string(),
                 total,
                 bytes: false,
@@ -210,14 +210,14 @@ pub fn start_batch_rename_job(
             Ok(renames.len())
         })();
 
-        let _ = sender.send(JobMessage::Finished { result });
+        let _ = sender.send_blocking(JobMessage::Finished { result });
     });
 
     handle
 }
 
 struct RenameProgress {
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
     total: u64,
@@ -230,7 +230,7 @@ impl RenameProgress {
         self.processed += amount;
 
         if self.last_sent.elapsed().as_millis() >= 80 {
-            let _ = self.sender.send(JobMessage::Progress {
+            let _ = self.sender.send_blocking(JobMessage::Progress {
                 label: "Renaming".to_string(),
                 processed: self.processed,
                 total: self.total,

@@ -1,5 +1,5 @@
 use crate::operations::{unique_destination, PendingOp};
-use gtk::glib;
+use async_channel::Sender;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -56,7 +56,7 @@ pub struct JobHandle {
 }
 
 struct ProgressState {
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
     label: String,
@@ -68,7 +68,7 @@ struct ProgressState {
 
 impl ProgressState {
     fn new(
-        sender: glib::Sender<JobMessage>,
+        sender: Sender<JobMessage>,
         cancel: Arc<AtomicBool>,
         pause: Arc<AtomicBool>,
         label: String,
@@ -99,7 +99,7 @@ impl ProgressState {
 
     fn maybe_send(&mut self) {
         if self.last_sent.elapsed().as_millis() >= 80 {
-            let _ = self.sender.send(JobMessage::Progress {
+            let _ = self.sender.send_blocking(JobMessage::Progress {
                 label: self.label.clone(),
                 processed: self.processed,
                 total: self.total,
@@ -114,7 +114,7 @@ impl ProgressState {
 pub fn start_paste_job(
     operation: PendingOp,
     tasks: Vec<PasteTask>,
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
 ) -> JobHandle {
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
@@ -139,7 +139,7 @@ pub fn start_paste_job(
             let total =
                 calculate_size_for_tasks(&active_tasks, &cancel).map_err(|err| err.to_string())?;
 
-            let _ = sender.send(JobMessage::Started {
+            let _ = sender.send_blocking(JobMessage::Started {
                 label: label.clone(),
                 total,
                 bytes: true,
@@ -200,13 +200,13 @@ pub fn start_paste_job(
             Ok(completed)
         })();
 
-        let _ = sender.send(JobMessage::Finished { result });
+        let _ = sender.send_blocking(JobMessage::Finished { result });
     });
 
     handle
 }
 
-pub fn start_trash_job(paths: Vec<PathBuf>, sender: glib::Sender<JobMessage>) -> JobHandle {
+pub fn start_trash_job(paths: Vec<PathBuf>, sender: Sender<JobMessage>) -> JobHandle {
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
 
@@ -219,7 +219,7 @@ pub fn start_trash_job(paths: Vec<PathBuf>, sender: glib::Sender<JobMessage>) ->
         let result = (|| -> Result<usize, String> {
             let total = paths.len() as u64;
 
-            let _ = sender.send(JobMessage::Started {
+            let _ = sender.send_blocking(JobMessage::Started {
                 label: "Moving to trash".to_string(),
                 total,
                 bytes: false,
@@ -249,7 +249,7 @@ pub fn start_trash_job(paths: Vec<PathBuf>, sender: glib::Sender<JobMessage>) ->
             Ok(completed)
         })();
 
-        let _ = sender.send(JobMessage::Finished { result });
+        let _ = sender.send_blocking(JobMessage::Finished { result });
     });
 
     handle

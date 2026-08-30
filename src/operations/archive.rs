@@ -1,7 +1,7 @@
 use crate::operations::jobs::{JobHandle, JobMessage};
 use crate::operations::unique_destination;
 use flate2::read::GzDecoder;
-use gtk::glib;
+use async_channel::Sender;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -63,7 +63,7 @@ fn archive_folder_name(name: &str) -> String {
 pub fn start_compress_zip_job(
     sources: Vec<PathBuf>,
     archive_path: PathBuf,
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
 ) -> JobHandle {
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
@@ -77,7 +77,7 @@ pub fn start_compress_zip_job(
         let result = (|| -> Result<usize, String> {
             let total = calculate_total_size(&sources, &cancel).map_err(|err| err.to_string())?;
 
-            let _ = sender.send(JobMessage::Started {
+            let _ = sender.send_blocking(JobMessage::Started {
                 label: "Compressing".to_string(),
                 total,
                 bytes: true,
@@ -126,7 +126,7 @@ pub fn start_compress_zip_job(
             Ok(completed)
         })();
 
-        let _ = sender.send(JobMessage::Finished { result });
+        let _ = sender.send_blocking(JobMessage::Finished { result });
     });
 
     handle
@@ -135,7 +135,7 @@ pub fn start_compress_zip_job(
 pub fn start_extract_job(
     archive_path: PathBuf,
     destination_dir: PathBuf,
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
 ) -> JobHandle {
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
@@ -183,14 +183,14 @@ pub fn start_extract_job(
             }
         })();
 
-        let _ = sender.send(JobMessage::Finished { result });
+        let _ = sender.send_blocking(JobMessage::Finished { result });
     });
 
     handle
 }
 
 struct ArchiveProgress {
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
     label: String,
@@ -202,7 +202,7 @@ struct ArchiveProgress {
 
 impl ArchiveProgress {
     fn new(
-        sender: glib::Sender<JobMessage>,
+        sender: Sender<JobMessage>,
         cancel: Arc<AtomicBool>,
         pause: Arc<AtomicBool>,
         label: String,
@@ -233,7 +233,7 @@ impl ArchiveProgress {
 
     fn maybe_send(&mut self) {
         if self.last_sent.elapsed().as_millis() >= 80 {
-            let _ = self.sender.send(JobMessage::Progress {
+            let _ = self.sender.send_blocking(JobMessage::Progress {
                 label: self.label.clone(),
                 processed: self.processed,
                 total: self.total,
@@ -354,7 +354,7 @@ fn zip_path(path: &Path) -> String {
 fn extract_zip(
     archive_path: &Path,
     destination_dir: &Path,
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
 ) -> Result<usize, String> {
@@ -368,7 +368,7 @@ fn extract_zip(
         total += file.size();
     }
 
-    let _ = sender.send(JobMessage::Started {
+    let _ = sender.send_blocking(JobMessage::Started {
         label: "Extracting".to_string(),
         total,
         bytes: true,
@@ -447,7 +447,7 @@ fn extract_zip(
 fn extract_tar_gz(
     archive_path: &Path,
     destination_dir: &Path,
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
 ) -> Result<usize, String> {
@@ -459,7 +459,7 @@ fn extract_tar_gz(
 fn extract_tar(
     archive_path: &Path,
     destination_dir: &Path,
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
 ) -> Result<usize, String> {
@@ -470,11 +470,11 @@ fn extract_tar(
 fn extract_tar_reader<R: Read>(
     reader: R,
     destination_dir: &Path,
-    sender: glib::Sender<JobMessage>,
+    sender: Sender<JobMessage>,
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
 ) -> Result<usize, String> {
-    let _ = sender.send(JobMessage::Started {
+    let _ = sender.send_blocking(JobMessage::Started {
         label: "Extracting".to_string(),
         total: 0,
         bytes: false,
