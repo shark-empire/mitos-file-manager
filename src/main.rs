@@ -454,7 +454,7 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
         return;
     };
 
-    let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
+    let (sender, receiver) = async_channel::unbounded();
 
     let (handle, title) = match request {
         JobRequest::Paste { operation, tasks } => {
@@ -1135,7 +1135,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     config::settings::load();
 
     // Start config watcher
-    let (config_tx, config_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
+    let (config_tx, config_rx) = async_channel::unbounded();
     let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
 
     let theme_mode = config::settings::theme_mode();
@@ -1144,7 +1144,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     let portal_rx = portal::service::start();
 
     // Setup Inotify Channel
-    let (sender, receiver) = glib::MainContext::channel(glib::Priority::DEFAULT);
+    let (sender, receiver) = async_channel::unbounded();
     let watcher_manager = Rc::new(RefCell::new(filesystem::watcher::WatcherManager::new(
         sender,
     )));
@@ -1361,30 +1361,30 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
 
-        config_rx.attach(None, move |shared_config| {
-            // Apply theme if changed
-            let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
-            if let Some(display) = gdk::Display::default() {
-                crate::ui::theme::apply_theme(&display, theme_mode);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(shared_config) = config_rx.recv().await {
+                // Apply theme if changed
+                let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
+                if let Some(display) = gdk::Display::default() {
+                    crate::ui::theme::apply_theme(&display, theme_mode);
+                }
+
+                // Refresh current tab
+                if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                    tab_state.borrow_mut().show_hidden = shared_config.show_hidden_files;
+
+                    refresh_tab(
+                        &tab_state,
+                        &store,
+                        &ctx,
+                        &location_entry,
+                        &search_entry,
+                        &hidden_toggle,
+                        &sidebar_list,
+                    );
+                    update_watcher(&notebook, &watcher_manager);
+                }
             }
-
-            // Refresh current tab
-            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                tab_state.borrow_mut().show_hidden = shared_config.show_hidden_files;
-
-                refresh_tab(
-                    &tab_state,
-                    &store,
-                    &ctx,
-                    &location_entry,
-                    &search_entry,
-                    &hidden_toggle,
-                    &sidebar_list,
-                );
-                update_watcher(&notebook, &watcher_manager);
-            }
-
-            glib::ControlFlow::Continue
         });
     }
 
@@ -1397,19 +1397,20 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
 
-        receiver.attach(None, move |()| {
-            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                refresh_tab(
-                    &tab_state,
-                    &store,
-                    &ctx,
-                    &location_entry,
-                    &search_entry,
-                    &hidden_toggle,
-                    &sidebar_list,
-                );
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(()) = receiver.recv().await {
+                if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                    refresh_tab(
+                        &tab_state,
+                        &store,
+                        &ctx,
+                        &location_entry,
+                        &search_entry,
+                        &hidden_toggle,
+                        &sidebar_list,
+                    );
+                }
             }
-            glib::ControlFlow::Continue
         });
     }
 
@@ -2631,59 +2632,6 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         monitor.connect_volume_removed(move |_, _| rebuild_vol_rem(None));
     }
 
-    // Desktop Service Receiver
-    {
-        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-            while let Ok(request) = desktop_rx.try_recv() {
-                match request {
-                    desktop::service::DesktopRequest::SetWallpaper { path, response_tx } => {
-                        // Store wallpaper path in MITOS config for the compositor to read.
-                        let config_dir = dirs::config_dir()
-                            .unwrap_or_else(|| PathBuf::from("."))
-                            .join("mitos/desktop");
-
-                        let _ = fs::create_dir_all(&config_dir);
-                        let wallpaper_file = config_dir.join("wallpaper");
-
-                        match fs::write(&wallpaper_file, &path) {
-                            Ok(()) => {
-                                let _ = response_tx.send(Ok(()));
-                            }
-                            Err(err) => {
-                                let _ = response_tx
-                                    .send(Err(format!("Failed to set wallpaper: {err}")));
-                            }
-                        }
-                    }
-
-                    desktop::service::DesktopRequest::GetWallpaper { response_tx } => {
-                        let config_dir = dirs::config_dir()
-                            .unwrap_or_else(|| PathBuf::from("."))
-                            .join("mitos/desktop");
-
-                        let wallpaper_file = config_dir.join("wallpaper");
-
-                        match fs::read_to_string(&wallpaper_file) {
-                            Ok(path) => {
-                                let _ = response_tx.send(path.trim().to_string());
-                            }
-                            Err(_) => {
-                                let _ = response_tx.send(String::new());
-                            }
-                        }
-                    }
-
-                    desktop::service::DesktopRequest::OpenDesktopSettings { response_tx } => {
-                        // Placeholder: in the future this opens the MITOS Settings app.
-                        let _ = response_tx.send(Ok(()));
-                    }
-                }
-            }
-
-            glib::ControlFlow::Continue
-        });
-    }
-
     // Portal Receiver
     {
         let window = window.clone();
@@ -2761,7 +2709,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     window.present();
 }
 
-fn show_context_menu<W: glib::IsA<gtk::Widget>>(
+fn show_context_menu<W: IsA<gtk::Widget>>(
     window: &ApplicationWindow,
     notebook: &Notebook,
     ctx: &Rc<RefCell<AppContext>>,
