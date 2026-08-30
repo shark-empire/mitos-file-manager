@@ -1,5 +1,6 @@
 use gtk::glib;
 use gtk::prelude::*;
+use gtk::subclass::prelude::*;
 
 use crate::filesystem::directory::Item;
 use crate::filesystem::metadata;

@@ -184,7 +184,7 @@ fn confirm_empty(parent: &ApplicationWindow) -> bool {
 
     dialog.connect_close_request(move |_| {
         loop_close.quit();
-        gtk::Inhibit(false)
+        glib::Propagation::Proceed
     });
 
     dialog.present();

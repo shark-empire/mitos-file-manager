@@ -78,7 +78,7 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
 
     let theme_dropdown = gtk::DropDown::from_strings(&["Light", "Dark"]);
 
-    let current_theme = if settings.theme_mode == "dark" { 1 } else { 0 };
+    let current_theme = if current.theme_mode == "dark" { 1 } else { 0 };
     theme_dropdown.set_selected(current_theme);
     theme_dropdown.set_halign(gtk::Align::End);
 

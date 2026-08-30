@@ -1,5 +1,6 @@
 use crate::filesystem::metadata;
 use crate::operations::jobs::{JobHandle, JobMessage};
+use async_channel::Receiver;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{ApplicationWindow, Box as GtkBox, Button, Label, Orientation, ProgressBar};
@@ -12,7 +13,7 @@ pub fn show_progress_dialog<F>(
     parent: &ApplicationWindow,
     title: &str,
     handle: JobHandle,
-    receiver: glib::Receiver<JobMessage>,
+    receiver: Receiver<JobMessage>,
     on_done: F,
 ) where
     F: Fn(Result<usize, String>) + 'static,
@@ -83,83 +84,84 @@ pub fn show_progress_dialog<F>(
         window.connect_close_request(move |_| {
             cancel.store(true, Ordering::Relaxed);
             closed.set(true);
-            gtk::Inhibit(false)
+            glib::Propagation::Proceed
         });
     }
 
     let start = Instant::now();
+    let win_for_task = window.clone();
 
-    receiver.attach(None, move |message| {
-        if closed.get() {
-            return glib::ControlFlow::Break;
-        }
-
-        match message {
-            JobMessage::Started {
-                label: text,
-                total,
-                bytes: _,
-            } => {
-                label.set_label(&text);
-
-                if total == 0 {
-                    bar.pulse();
-                } else {
-                    bar.set_fraction(0.0);
-                }
+    glib::MainContext::default().spawn_local(async move {
+        while let Ok(message) = receiver.recv().await {
+            if closed.get() {
+                break;
             }
 
-            JobMessage::Progress {
-                label: text,
-                processed,
-                total,
-                bytes,
-            } => {
-                label.set_label(&text);
+            match message {
+                JobMessage::Started {
+                    label: text,
+                    total,
+                    bytes: _,
+                } => {
+                    label.set_label(&text);
 
-                if total == 0 {
-                    bar.pulse();
-                } else {
-                    bar.set_fraction((processed as f64 / total as f64).clamp(0.0, 1.0));
+                    if total == 0 {
+                        bar.pulse();
+                    } else {
+                        bar.set_fraction(0.0);
+                    }
                 }
 
-                let detail = if bytes {
-                    let elapsed = start.elapsed().as_secs_f64();
+                JobMessage::Progress {
+                    label: text,
+                    processed,
+                    total,
+                    bytes,
+                } => {
+                    label.set_label(&text);
 
-                    let speed = if elapsed > 0.0 {
-                        processed as f64 / elapsed
+                    if total == 0 {
+                        bar.pulse();
                     } else {
-                        0.0
+                        bar.set_fraction((processed as f64 / total as f64).clamp(0.0, 1.0));
+                    }
+
+                    let detail = if bytes {
+                        let elapsed = start.elapsed().as_secs_f64();
+
+                        let speed = if elapsed > 0.0 {
+                            processed as f64 / elapsed
+                        } else {
+                            0.0
+                        };
+
+                        let remaining = if speed > 0.0 && total > processed {
+                            (total - processed) as f64 / speed
+                        } else {
+                            0.0
+                        };
+
+                        format!(
+                            "{} of {} · {}/s · {} left",
+                            metadata::format_size(processed),
+                            metadata::format_size(total),
+                            metadata::format_size(speed as u64),
+                            format_duration(remaining)
+                        )
+                    } else {
+                        format!("{} of {} items", processed, total)
                     };
 
-                    let remaining = if speed > 0.0 && total > processed {
-                        (total - processed) as f64 / speed
-                    } else {
-                        0.0
-                    };
+                    bar.set_text(Some(&detail));
+                }
 
-                    format!(
-                        "{} of {} · {}/s · {} left",
-                        metadata::format_size(processed),
-                        metadata::format_size(total),
-                        metadata::format_size(speed as u64),
-                        format_duration(remaining)
-                    )
-                } else {
-                    format!("{} of {} items", processed, total)
-                };
-
-                bar.set_text(Some(&detail));
-            }
-
-            JobMessage::Finished { result } => {
-                window.close();
-                on_done(result);
-                return glib::ControlFlow::Break;
+                JobMessage::Finished { result } => {
+                    win_for_task.close();
+                    on_done(result);
+                    break;
+                }
             }
         }
-
-        glib::ControlFlow::Continue
     });
 
     window.present();
