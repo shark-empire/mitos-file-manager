@@ -183,7 +183,8 @@ pub fn start_paste_job(
                 }
 
                 if task.action == ConflictAction::Replace && target.exists() {
-                    remove_all_with_progress(&target, &mut state)?;
+                    remove_all_with_progress(&target, &mut state)
+                   .map_err(|err| err.to_string())?;
                 }
 
                 match operation {
@@ -434,7 +435,8 @@ fn move_path_with_progress(
 
             if err.raw_os_error() == Some(EXDEV) {
                 copy_path_with_progress(source, destination, state)?;
-                remove_all_with_progress(source, state)?;
+                remove_all_with_progress(source, state)
+                .map_err(|err| err.to_string())?;
                 Ok(())
             } else {
                 Err(err)
