@@ -446,7 +446,8 @@ fn enqueue_job(queue: &JobQueue, request: JobRequest, ui: JobUi) {
 
     if start_now {
         start_next_job(queue, ui);
-    } else if let Some(status_label) = get_obj_data::<_, Label>(&ui.location_entry, "status-label") {
+    } else if let Some(status_label) = get_obj_data::<_, Label>(&ui.location_entry, "status-label")
+    {
         status_label.set_label(&format!("{pending_count} job(s) queued"));
     }
 }
@@ -835,7 +836,10 @@ fn add_tab(
         let watcher_manager = watcher_manager.clone();
         let notebook = notebook.clone();
 
-        let drop_target = gtk::DropTarget::new(gtk::gdk::FileList::static_type(), gtk::gdk::DragAction::COPY);
+        let drop_target = gtk::DropTarget::new(
+            gtk::gdk::FileList::static_type(),
+            gtk::gdk::DragAction::COPY,
+        );
 
         drop_target.connect_drop(move |target, value, _x, _y| {
             let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
@@ -1047,7 +1051,10 @@ fn add_tab(
         let watcher_manager = watcher_manager.clone();
         let notebook = notebook.clone();
 
-        let drop_target = gtk::DropTarget::new(gtk::gdk::FileList::static_type(), gtk::gdk::DragAction::COPY);
+        let drop_target = gtk::DropTarget::new(
+            gtk::gdk::FileList::static_type(),
+            gtk::gdk::DragAction::COPY,
+        );
 
         drop_target.connect_drop(move |target, value, _x, _y| {
             let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
@@ -1306,7 +1313,11 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     set_obj_data(&location_entry, "split-state", split_state.clone());
     set_obj_data(&location_entry, "split-store", split_store.clone());
     set_obj_data(&location_entry, "split-label", split_label.clone());
-    set_obj_data(&location_entry, "split-container", split_pane.container.clone());
+    set_obj_data(
+        &location_entry,
+        "split-container",
+        split_pane.container.clone(),
+    );
     set_obj_data(&location_entry, "preview-box", preview_box.clone());
     set_obj_data(&location_entry, "main-window", window.clone());
 
@@ -2456,7 +2467,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     {
         let location_entry = location_entry.clone();
         preview_toggle.connect_toggled(move |toggle| {
-            if let Some(panel) = get_obj_data::<_, gtk::ScrolledWindow>(&location_entry, "preview-panel") {
+            if let Some(panel) =
+                get_obj_data::<_, gtk::ScrolledWindow>(&location_entry, "preview-panel")
+            {
                 panel.set_visible(toggle.is_active());
             }
         });
@@ -2492,7 +2505,8 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     {
         let location_entry = location_entry.clone();
         split_toggle.connect_toggled(move |toggle| {
-            if let Some(container) = get_obj_data::<_, gtk::Box>(&location_entry, "split-container") {
+            if let Some(container) = get_obj_data::<_, gtk::Box>(&location_entry, "split-container")
+            {
                 container.set_visible(toggle.is_active());
             }
         });
@@ -2567,7 +2581,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
                 bookmarks::add(&mut c.bookmarks, name, current);
                 drop(c);
-                if let Some(win) = get_obj_data::<_, gtk::ApplicationWindow>(&location_entry, "main-window") {
+                if let Some(win) =
+                    get_obj_data::<_, gtk::ApplicationWindow>(&location_entry, "main-window")
+                {
                     sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
                 }
                 update_watcher(&notebook, &watcher_manager);
@@ -2587,7 +2603,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let watcher_manager = watcher_manager.clone();
 
         let rebuild_and_check = move |unmounted_path: Option<PathBuf>| {
-            if let Some(win) = get_obj_data::<_, gtk::ApplicationWindow>(&location_entry, "main-window") {
+            if let Some(win) =
+                get_obj_data::<_, gtk::ApplicationWindow>(&location_entry, "main-window")
+            {
                 sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
             }
 
@@ -3085,7 +3103,9 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
                     let _ = crate::operations::copy::copy_path(source, &target);
                 }
 
-                if let Some(store) = get_obj_data::<_, gio::ListStore>(&location_entry, "split-store") {
+                if let Some(store) =
+                    get_obj_data::<_, gio::ListStore>(&location_entry, "split-store")
+                {
                     if let Some(label) = get_obj_data::<_, Label>(&location_entry, "split-label") {
                         ui::split_pane::refresh_pane(&split_state, &store, &label);
                     }
@@ -3275,7 +3295,9 @@ fn show_sidebar_context_menu(
         remove_btn.connect_clicked(move |_| {
             popover.popdown();
             bookmarks::remove(&mut ctx.borrow_mut().bookmarks, &path);
-            if let Some(win) = get_obj_data::<_, gtk::ApplicationWindow>(&location_entry, "main-window") {
+            if let Some(win) =
+                get_obj_data::<_, gtk::ApplicationWindow>(&location_entry, "main-window")
+            {
                 sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
             }
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
