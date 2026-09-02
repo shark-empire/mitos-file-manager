@@ -33,18 +33,22 @@ pub fn show_tab_context_menu(
 
     popover.set_child(Some(&menu_box));
 
+    // Close current tab closure
     let notebook_clone = notebook.clone();
     let page_widget_clone = page_widget.clone();
+    let popover_close = popover.clone();
 
     close_btn.connect_clicked(move |_| {
         if let Some(page_num) = notebook_clone.page_num(&page_widget_clone) {
             notebook_clone.remove_page(Some(page_num));
         }
-        popover.popdown();
+        popover_close.popdown();
     });
 
+    // Close other tabs closure
     let notebook_clone2 = notebook.clone();
     let page_widget_clone2 = page_widget.clone();
+    let popover_close_others = popover.clone();
 
     close_others_btn.connect_clicked(move |_| {
         let keep_page = notebook_clone2.page_num(&page_widget_clone2);
@@ -58,17 +62,19 @@ pub fn show_tab_context_menu(
             }
         }
 
-        popover.popdown();
+        popover_close_others.popdown();
     });
 
+    // Close all tabs closure
     let notebook_clone3 = notebook.clone();
+    let popover_close_all = popover.clone();
 
     close_all_btn.connect_clicked(move |_| {
         while notebook_clone3.n_pages() > 0 {
             notebook_clone3.remove_page(Some(0));
         }
 
-        popover.popdown();
+        popover_close_all.popdown();
     });
 
     popover.popup();
