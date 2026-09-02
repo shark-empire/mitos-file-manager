@@ -434,7 +434,9 @@ fn move_path_with_progress(
 
             if err.raw_os_error() == Some(EXDEV) {
                 copy_path_with_progress(source, destination, state)?;
-                remove_all_with_progress(source, state).map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
+                remove_all_with_progress(source, state).map_err(|err| {
+                    std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+                })?;
 
                 Ok(())
             } else {
