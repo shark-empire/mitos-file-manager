@@ -61,7 +61,6 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
             .map(|o| o.name().to_lowercase())
             .unwrap_or_default();
         a.cmp(&b).into()
-
     });
 
     let name_column = gtk::ColumnViewColumn::new(Some("Name"), Some(name_factory.clone()));
