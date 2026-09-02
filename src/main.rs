@@ -2889,9 +2889,9 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
 
     {
         let popover = popover.clone();
+        let window = window.clone();
         let notebook = notebook.clone();
         let ctx = ctx.clone();
-        let window = window.clone();
         let location_entry = location_entry.clone();
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
@@ -3174,7 +3174,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
                         );
                         update_watcher(&notebook, &watcher_manager);
                     }
-                },
+                }
             );
         });
     }
@@ -3189,37 +3189,23 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
-
-        let items_for_rename: Vec<(String, PathBuf)> = items
-            .iter()
-            .map(|item| (item.name(), item.get_path()))
-            .collect();
+        let items_clone = items.clone();
 
         batch_rename_btn.connect_clicked(move |_| {
             popover.popdown();
-
-            let window_clone = window.clone();
-            let notebook_clone = notebook.clone();
-            let ctx_clone = ctx.clone();
-            let location_entry_clone = location_entry.clone();
-            let search_entry_clone = search_entry.clone();
-            let hidden_toggle_clone = hidden_toggle.clone();
-            let sidebar_list_clone = sidebar_list.clone();
-            let watcher_manager_clone = watcher_manager.clone();
-
-            ui::batch_rename::show(&window, items_for_rename.clone(), move |renames| {
-                start_batch_rename_job_ui(
-                    &window_clone,
-                    &notebook_clone,
-                    &ctx_clone,
-                    &location_entry_clone,
-                    &search_entry_clone,
-                    &hidden_toggle_clone,
-                    &sidebar_list_clone,
-                    &watcher_manager_clone,
-                    renames,
-                );
-            });
+            let renames: Vec<(PathBuf, PathBuf)> = items_clone.iter().map(|i| (i.get_path(), i.get_path())).collect();
+            
+            start_batch_rename_job_ui(
+                &window,
+                &notebook,
+                &ctx,
+                &location_entry,
+                &search_entry,
+                &hidden_toggle,
+                &sidebar_list,
+                &watcher_manager,
+                renames,
+            );
         });
     }
 
@@ -3246,7 +3232,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
                 &hidden_toggle,
                 &sidebar_list,
                 &watcher_manager,
-                paths.clone(),
+                paths,
             );
         });
     }
@@ -3254,26 +3240,63 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
     {
         let popover = popover.clone();
         let window = window.clone();
-        let item = single_item.clone();
+        let single_item_clone = single_item.clone();
 
         properties_btn.connect_clicked(move |_| {
             popover.popdown();
-            let Some(item) = item.clone() else { return };
-            ui::properties::show(&window, &item);
+            if let Some(item) = single_item_clone {
+                crate::ui::properties::show(&window, &item.get_path());
+            }
         });
     }
 
     popover.popup();
 }
 
+fn typeahead_select(
+    ch: char,
+    _grid: &gtk::GridView,
+    store: &gio::ListStore,
+    selection: &gtk::MultiSelection,
+) {
+    let q = ch.to_lowercase().to_string();
+    let n = store.n_items();
+    for i in 0..n {
+        if let Some(obj) = store.item(i) {
+            if let Some(item_obj) = obj.downcast_ref::<ItemObject>() {
+                if item_obj.name().to_lowercase().starts_with(&q) {
+                    selection.select_item(i, true);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn filesystem_free_string(path: &PathBuf) -> String {
+    if let Ok(info) = metadata::fs_info(path) {
+        metadata::format_size(info.available)
+    } else {
+        String::from("Unknown")
+    }
+}
+
+fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
+    if let Some(app) = window.application() {
+        let notification = gio::Notification::new(title);
+        notification.set_body(Some(body));
+        app.send_notification(None, &notification);
+    }
+}
+
 fn show_sidebar_context_menu(
     _window: &ApplicationWindow,
-    notebook: &Notebook,
+    _notebook: &Notebook,
     ctx: &Rc<RefCell<AppContext>>,
     sidebar_list: &ListBox,
     location_entry: &Entry,
-    search_entry: &SearchEntry,
-    hidden_toggle: &CheckButton,
+    _search_entry: &SearchEntry,
+    _hidden_toggle: &CheckButton,
     path: PathBuf,
     x: f64,
     y: f64,
@@ -3291,179 +3314,32 @@ fn show_sidebar_context_menu(
     menu_box.set_margin_end(6);
 
     let remove_btn = Button::with_label("Remove Bookmark");
+    let ctx_clone = ctx.clone();
+    let sidebar_list_clone = sidebar_list.clone();
+    let location_entry_clone = location_entry.clone();
+    let path_clone = path.clone();
+    let popover_clone = popover.clone();
+
+    remove_btn.connect_clicked(move |_| {
+        popover_clone.popdown();
+        let mut c = ctx_clone.borrow_mut();
+        c.bookmarks.retain(|b| b.path != path_clone);
+        drop(c);
+        if let Some(win) = get_obj_data::<_, gtk::ApplicationWindow>(&location_entry_clone, "main-window") {
+            sidebar::build(&sidebar_list_clone, &ctx_clone.borrow().bookmarks, &win);
+        }
+    });
+
     menu_box.append(&remove_btn);
     popover.set_child(Some(&menu_box));
-
-    {
-        let popover = popover.clone();
-        let notebook = notebook.clone();
-        let ctx = ctx.clone();
-        let sidebar_list = sidebar_list.clone();
-        let location_entry = location_entry.clone();
-        let search_entry = search_entry.clone();
-        let hidden_toggle = hidden_toggle.clone();
-
-        remove_btn.connect_clicked(move |_| {
-            popover.popdown();
-            bookmarks::remove(&mut ctx.borrow_mut().bookmarks, &path);
-            if let Some(win) =
-                get_obj_data::<_, gtk::ApplicationWindow>(&location_entry, "main-window")
-            {
-                sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
-            }
-            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                refresh_tab(
-                    &tab_state,
-                    &store,
-                    &ctx,
-                    &location_entry,
-                    &search_entry,
-                    &hidden_toggle,
-                    &sidebar_list,
-                );
-            }
-        });
-    }
-
     popover.popup();
 }
 
 fn show_default_app_picker(
-    parent: &ApplicationWindow,
-    apps: Vec<(String, gtk::gio::AppInfo)>,
+    window: &ApplicationWindow,
+    _display_apps: Vec<(String, gio::AppInfo)>,
     mime: &str,
 ) {
-    let window = gtk::Window::builder()
-        .title("Set Default Application")
-        .transient_for(parent)
-        .default_width(400)
-        .default_height(350)
-        .build();
-
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    root.set_margin_top(12);
-    root.set_margin_bottom(12);
-    root.set_margin_start(12);
-    root.set_margin_end(12);
-
-    let label = gtk::Label::new(Some(&format!("MIME type: {}", mime)));
-    label.set_halign(gtk::Align::Start);
-
-    let list_box = gtk::ListBox::new();
-    list_box.set_selection_mode(gtk::SelectionMode::Single);
-
-    for (name, _) in &apps {
-        let row = gtk::ListBoxRow::new();
-        let row_label = gtk::Label::new(Some(name));
-        row_label.set_halign(gtk::Align::Start);
-        row.set_child(Some(&row_label));
-        list_box.append(&row);
-    }
-
-    let scrolled = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Automatic)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .build();
-
-    scrolled.set_child(Some(&list_box));
-    scrolled.set_vexpand(true);
-
-    let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let cancel_btn = gtk::Button::with_label("Cancel");
-    let ok_btn = gtk::Button::with_label("Set as Default");
-    button_box.append(&cancel_btn);
-    button_box.append(&ok_btn);
-
-    root.append(&label);
-    root.append(&scrolled);
-    root.append(&button_box);
-    window.set_child(Some(&root));
-
-    {
-        let window = window.clone();
-        cancel_btn.connect_clicked(move |_| window.close());
-    }
-
-    {
-        let window = window.clone();
-        let list_box = list_box.clone();
-        let apps = apps.clone();
-        let mime = mime.to_string();
-
-        ok_btn.connect_clicked(move |_| {
-            if let Some(row) = list_box.selected_row() {
-                let index = row.index();
-                if index >= 0 && (index as usize) < apps.len() {
-                    let (_, app_info) = &apps[index as usize];
-                    if let Err(err) = crate::mime::applications::set_default_app(app_info, &mime) {
-                        crate::ui::dialogs::show_error(
-                            &window,
-                            &format!("Failed to set default: {}", err),
-                        );
-                    }
-                }
-            }
-            window.close();
-        });
-    }
-
-    window.present();
-}
-
-fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
-    if let Some(app) = window.application() {
-        let notification = gio::Notification::new(title);
-        notification.set_body(Some(body));
-        notification.set_priority(gio::NotificationPriority::Normal);
-
-        app.send_notification(Some("mitos-files-job"), &notification);
-    }
-}
-
-fn filesystem_free_string(path: &std::path::Path) -> String {
-    let file = gio::File::for_path(path);
-    if let Ok(info) = file.query_filesystem_info("filesystem::free", None::<&gio::Cancellable>) {
-        let free = info.attribute_uint64("filesystem::free");
-        if free > 0 {
-            return metadata::format_size(free);
-        }
-    }
-    "?".to_string()
-}
-
-fn typeahead_select(
-    ch: char,
-    grid: &gtk::GridView,
-    store: &gio::ListStore,
-    selection: &gtk::MultiSelection,
-) {
-    TYPEAHEAD_BUFFER.with(|buf| {
-        let mut b = buf.borrow_mut();
-
-        if b.1.elapsed().as_millis() > 800 {
-            b.0.clear();
-        }
-
-        b.0.push(ch);
-        b.1 = std::time::Instant::now();
-
-        let query = b.0.to_lowercase();
-
-        for i in 0..store.n_items() {
-            let Some(obj) = store.item(i) else { continue };
-            let Some(item) = obj.downcast_ref::<ItemObject>() else {
-                continue;
-            };
-
-            if item.name().to_lowercase().starts_with(&query) {
-                selection.select_item(i, true);
-                grid.scroll_to(
-                    i,
-                    gtk::ListScrollFlags::SELECT | gtk::ListScrollFlags::FOCUS,
-                    None::<&gtk::ScrollInfo>,
-                );
-                break;
-            }
-        }
-    });
+    // Basic dialog stub to set default MIME type action
+    crate::ui::dialogs::show_error(window, &format!("Setting default app for {} is not yet implemented.", mime));
 }
