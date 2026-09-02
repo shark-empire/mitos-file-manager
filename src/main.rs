@@ -11,6 +11,7 @@ mod plugins;
 mod portal;
 mod search;
 mod ui;
+mod util;
 
 use gtk::gdk;
 use gtk::gio;
@@ -40,6 +41,7 @@ use ui::dialogs;
 use ui::grid_view;
 use ui::item_object::ItemObject;
 use ui::sidebar;
+use util::{get_obj_data, set_obj_data};
 
 static VIEW_MODE_LIST: AtomicBool = AtomicBool::new(false);
 
@@ -88,27 +90,6 @@ struct JobUi {
     watcher_manager: Rc<RefCell<filesystem::watcher::WatcherManager>>,
 }
 
-/// Store typed Rust-side data on a GObject's qdata.
-///
-/// This is the one place `ObjectExt::set_data` (an `unsafe fn` — it doesn't
-/// track the type it was called with) is invoked; every call site in this
-/// file goes through here so the `unsafe` surface stays in one spot.
-fn set_obj_data<O: glib::object::ObjectType, T: 'static>(obj: &O, key: &str, value: T) {
-    unsafe {
-        obj.set_data(key, value);
-    }
-}
-
-/// Fetch a clone of typed Rust-side data previously stored with
-/// [`set_obj_data`]. Returns `None` if nothing was stored under `key`.
-///
-/// `ObjectExt::data` returns a raw `NonNull<T>` (it's `unsafe fn` for the
-/// same reason as `set_data`); this dereferences and clones it into an
-/// owned `T` so every call site gets a normal, safe value back.
-fn get_obj_data<O: glib::object::ObjectType, T: Clone + 'static>(obj: &O, key: &str) -> Option<T> {
-    unsafe { obj.data::<T>(key).map(|ptr| ptr.as_ref().clone()) }
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -132,7 +113,7 @@ fn get_active_widgets(
     gtk::MultiSelection,
 )> {
     let page_num = notebook.current_page()?;
-    let widget = notebook.nth_page(page_num)?;
+    let widget = notebook.nth_page(Some(page_num))?;
     let state: Rc<RefCell<TabState>> = get_obj_data(&widget, "tab-state")?;
     let grid: gtk::GridView = get_obj_data(&widget, "grid-view")?;
     let store: gio::ListStore = get_obj_data(&widget, "list-store")?;
@@ -681,7 +662,7 @@ fn add_tab(
 
         let store_for_selection = store.clone();
 
-        selection.connect_selection_changed(move |selection| {
+        selection.connect_selection_changed(move |selection, _position, _n_items| {
             let selected = grid_view::selected_items(selection, &store_for_selection);
 
             if let Some(selection_label) = selection_label.clone() {
@@ -738,7 +719,7 @@ fn add_tab(
         let page_widget = page_widget.clone();
         close_btn.connect_clicked(move |_| {
             if let Some(page_num) = notebook.page_num(&page_widget) {
-                notebook.remove_page(page_num);
+                notebook.remove_page(Some(page_num));
             }
         });
     }
@@ -841,13 +822,14 @@ fn add_tab(
             gtk::gdk::DragAction::COPY,
         );
 
-        drop_target.connect_drop(move |target, value, _x, _y| {
+        drop_target.connect_drop(move |_target, value, _x, _y| {
             let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
                 return false;
             };
 
-            let action = target.current_action();
-            let is_copy = action == gtk::gdk::DragAction::COPY;
+            // This target only ever accepts DragAction::COPY (see how it was
+            // constructed above), so any drop it receives is a copy.
+            let is_copy = true;
 
             let files = file_list.files();
             if files.is_empty() {
@@ -1056,12 +1038,14 @@ fn add_tab(
             gtk::gdk::DragAction::COPY,
         );
 
-        drop_target.connect_drop(move |target, value, _x, _y| {
+        drop_target.connect_drop(move |_target, value, _x, _y| {
             let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
                 return false;
             };
 
-            let is_copy = target.current_action() == gtk::gdk::DragAction::COPY;
+            // This target only ever accepts DragAction::COPY (see how it was
+            // constructed above), so any drop it receives is a copy.
+            let is_copy = true;
             let files = file_list.files();
             if files.is_empty() {
                 return false;
@@ -1141,7 +1125,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
 
     let theme_mode = config::settings::theme_mode();
-    ui::theme::apply_theme(&window.display(), theme_mode);
+    ui::theme::apply_theme(&gtk::prelude::WidgetExt::display(&window), theme_mode);
 
     let portal_rx = portal::service::start();
 
@@ -1444,7 +1428,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                 return glib::Propagation::Stop;
             }
 
-            if let Some(focus) = window.focus() {
+            if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&window) {
                 if focus.downcast_ref::<gtk::Entry>().is_some()
                     || focus.downcast_ref::<gtk::SearchEntry>().is_some()
                 {
@@ -1531,7 +1515,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                 }
                 k if ctrl && k == gtk::gdk::Key::w => {
                     if let Some(page_num) = notebook.current_page() {
-                        notebook.remove_page(page_num);
+                        notebook.remove_page(Some(page_num));
                         update_watcher(&notebook, &watcher_manager);
                     }
                     return glib::Propagation::Stop;
@@ -1890,22 +1874,21 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
         right_click.connect_pressed(move |_gesture, _n_press, x, y| {
             if let Some(row) = sidebar_list.row_at_y(y as i32) {
-                if let Some(name) = row.name() {
-                    if let Some(path_str) = name.strip_prefix("bm:") {
-                        let path = PathBuf::from(path_str);
-                        show_sidebar_context_menu(
-                            &window,
-                            &notebook,
-                            &ctx,
-                            &sidebar_list,
-                            &location_entry,
-                            &search_entry,
-                            &hidden_toggle,
-                            path,
-                            x,
-                            y,
-                        );
-                    }
+                let name = row.widget_name();
+                if let Some(path_str) = name.strip_prefix("bm:") {
+                    let path = PathBuf::from(path_str);
+                    show_sidebar_context_menu(
+                        &window,
+                        &notebook,
+                        &ctx,
+                        &sidebar_list,
+                        &location_entry,
+                        &search_entry,
+                        &hidden_toggle,
+                        path,
+                        x,
+                        y,
+                    );
                 }
             }
         });
@@ -1937,8 +1920,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let tree_state = tree_state.clone();
 
         tree_list.connect_row_activated(move |_, row| {
-            if let Some(path_str) = row.name() {
-                let path = PathBuf::from(path_str);
+            let path_str = row.widget_name();
+            if !path_str.is_empty() {
+                let path = PathBuf::from(path_str.as_str());
 
                 // Toggle folder expansion in the tree
                 ui::tree_view::toggle_folder(&tree_state, &tree_list, path.clone());
@@ -2749,7 +2733,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
     popover.set_has_arrow(true);
     popover.set_autohide(true);
     popover.set_parent(parent);
-    popover.set_pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1));
+    popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
 
     let menu_box = GtkBox::new(Orientation::Vertical, 6);
     menu_box.set_margin_top(6);
@@ -3271,7 +3255,7 @@ fn show_sidebar_context_menu(
     popover.set_has_arrow(true);
     popover.set_autohide(true);
     popover.set_parent(sidebar_list);
-    popover.set_pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1));
+    popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
 
     let menu_box = GtkBox::new(Orientation::Vertical, 6);
     menu_box.set_margin_top(6);
@@ -3411,12 +3395,8 @@ fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
 
 fn filesystem_free_string(path: &std::path::Path) -> String {
     let file = gio::File::for_path(path);
-    if let Ok(info) = file.query_filesystem_info(
-        "filesystem::free",
-        gio::FileQueryInfoFlags::NONE,
-        gio::Cancellable::NONE,
-    ) {
-        if let Some(free) = info.attribute_u64("filesystem::free") {
+    if let Ok(info) = file.query_filesystem_info("filesystem::free", gio::Cancellable::NONE) {
+        if let Some(free) = info.attribute_uint64("filesystem::free") {
             return metadata::format_size(free);
         }
     }
@@ -3448,7 +3428,7 @@ fn typeahead_select(
             };
 
             if item.name().to_lowercase().starts_with(&query) {
-                selection.set_selected(i);
+                selection.select_item(i, true);
                 grid.scroll_to(
                     i,
                     gtk::ListScrollFlags::SELECT | gtk::ListScrollFlags::FOCUS,
