@@ -60,10 +60,11 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
             .downcast_ref::<ItemObject>()
             .map(|o| o.name().to_lowercase())
             .unwrap_or_default();
-        a.cmp(&b)
+        a.cmp(&b).into()
+
     });
 
-    let name_column = gtk::ColumnViewColumn::new(Some("Name"), Some(&name_factory));
+    let name_column = gtk::ColumnViewColumn::new(Some("Name"), Some(name_factory.clone()));
     name_column.set_sorter(Some(&name_sorter));
     name_column.set_resizable(true);
     name_column.set_expand(true);
@@ -137,7 +138,8 @@ where
         }
     });
 
-    let column = gtk::ColumnViewColumn::new(Some(title), Some(&factory));
+    let name_column = gtk::ColumnViewColumn::new(Some("Name"), Some(name_factory.clone()));
+
     column.set_sorter(Some(&sorter));
     column.set_resizable(true);
     column
