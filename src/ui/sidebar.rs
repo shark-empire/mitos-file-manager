@@ -169,7 +169,7 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
 
                     mount_clone.unmount_with_operation(
                         gio::MountUnmountFlags::NONE,
-                        None,
+                        None::<&gtk::gio::MountOperation>,
                         gio::Cancellable::NONE,
                         move |result| {
                             if let Err(err) = result {
