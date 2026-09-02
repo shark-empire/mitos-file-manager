@@ -1352,7 +1352,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         glib::MainContext::default().spawn_local(async move {
             while let Ok(shared_config) = config_rx.recv().await {
                 // Apply theme if changed
-                if let Ok(theme_mode) = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode) {
+                if let Ok(theme_mode) =
+                    crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode)
+                {
                     if let Some(display) = gdk::Display::default() {
                         crate::ui::theme::apply_theme(&display, theme_mode);
                     }
@@ -1772,8 +1774,12 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
                                 glib::ControlFlow::Break
                             }
-                            Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
-                            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                glib::ControlFlow::Break
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                glib::ControlFlow::Continue
+                            }
                         }
                     });
                 } else {
@@ -2631,81 +2637,89 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     // Portal Receiver
     {
         let window = window.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-            loop {
-                match portal_rx.try_recv() {
-                    Ok(request) => match request {
-                        portal::service::PortalRequest::OpenFile { title, response_tx } => {
-                            let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
-                            let response_tx = response_tx.clone();
-                            dialog.open(
-                                Some(&window),
-                                None::<&gtk::gio::Cancellable>,
-                                move |result| match result {
-                                    Ok(file) => {
-                                        let path = file
-                                            .path()
-                                            .map(|p| p.display().to_string())
-                                            .unwrap_or_default();
-                                        let _ = response_tx.send(
-                                            portal::service::PortalResponse::Selected(vec![path]),
-                                        );
-                                    }
-                                    Err(_) => {
-                                        let _ = response_tx
-                                            .send(portal::service::PortalResponse::Cancelled);
-                                    }
-                                },
-                            );
-                        }
-                        portal::service::PortalRequest::SaveFile {
-                            title,
-                            default_name,
-                            response_tx,
-                        } => {
-                            let dialog = gtk::FileDialog::builder()
-                                .title(&title)
-                                .initial_name(&default_name)
-                                .modal(true)
-                                .build();
-                            let response_tx = response_tx.clone();
-                            dialog.save(Some(&window), None::<&gtk::gio::Cancellable>, move |result| match result {
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || loop {
+            match portal_rx.try_recv() {
+                Ok(request) => match request {
+                    portal::service::PortalRequest::OpenFile { title, response_tx } => {
+                        let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
+                        let response_tx = response_tx.clone();
+                        dialog.open(
+                            Some(&window),
+                            None::<&gtk::gio::Cancellable>,
+                            move |result| match result {
                                 Ok(file) => {
                                     let path = file
                                         .path()
                                         .map(|p| p.display().to_string())
                                         .unwrap_or_default();
-                                    let _ = response_tx
-                                        .send(portal::service::PortalResponse::Selected(vec![path]));
+                                    let _ = response_tx.send(
+                                        portal::service::PortalResponse::Selected(vec![path]),
+                                    );
                                 }
                                 Err(_) => {
-                                    let _ =
-                                        response_tx.send(portal::service::PortalResponse::Cancelled);
+                                    let _ = response_tx
+                                        .send(portal::service::PortalResponse::Cancelled);
                                 }
-                            });
-                        }
-                        portal::service::PortalRequest::OpenFolder { title, response_tx } => {
-                            let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
-                            let response_tx = response_tx.clone();
-                            dialog.select_folder(Some(&window), None::<&gtk::gio::Cancellable>, move |result| match result {
+                            },
+                        );
+                    }
+                    portal::service::PortalRequest::SaveFile {
+                        title,
+                        default_name,
+                        response_tx,
+                    } => {
+                        let dialog = gtk::FileDialog::builder()
+                            .title(&title)
+                            .initial_name(&default_name)
+                            .modal(true)
+                            .build();
+                        let response_tx = response_tx.clone();
+                        dialog.save(
+                            Some(&window),
+                            None::<&gtk::gio::Cancellable>,
+                            move |result| match result {
                                 Ok(file) => {
                                     let path = file
                                         .path()
                                         .map(|p| p.display().to_string())
                                         .unwrap_or_default();
-                                    let _ = response_tx
-                                        .send(portal::service::PortalResponse::Selected(vec![path]));
+                                    let _ = response_tx.send(
+                                        portal::service::PortalResponse::Selected(vec![path]),
+                                    );
                                 }
                                 Err(_) => {
-                                    let _ =
-                                        response_tx.send(portal::service::PortalResponse::Cancelled);
+                                    let _ = response_tx
+                                        .send(portal::service::PortalResponse::Cancelled);
                                 }
-                            });
-                        }
-                    },
-                    Err(async_channel::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-                    Err(async_channel::TryRecvError::Closed) => return glib::ControlFlow::Break,
-                }
+                            },
+                        );
+                    }
+                    portal::service::PortalRequest::OpenFolder { title, response_tx } => {
+                        let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
+                        let response_tx = response_tx.clone();
+                        dialog.select_folder(
+                            Some(&window),
+                            None::<&gtk::gio::Cancellable>,
+                            move |result| match result {
+                                Ok(file) => {
+                                    let path = file
+                                        .path()
+                                        .map(|p| p.display().to_string())
+                                        .unwrap_or_default();
+                                    let _ = response_tx.send(
+                                        portal::service::PortalResponse::Selected(vec![path]),
+                                    );
+                                }
+                                Err(_) => {
+                                    let _ = response_tx
+                                        .send(portal::service::PortalResponse::Cancelled);
+                                }
+                            },
+                        );
+                    }
+                },
+                Err(async_channel::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(async_channel::TryRecvError::Closed) => return glib::ControlFlow::Break,
             }
         });
     }
@@ -3136,26 +3150,32 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
             let sidebar_list = sidebar_list.clone();
             let watcher_manager = watcher_manager.clone();
 
-            dialogs::show_text_dialog(&window_for_dialog, "Rename", &initial_name, "Rename", move |name| {
-                if name.is_empty() {
-                    return;
-                }
-                if let Err(err) = operations::rename::rename_path(&source, &name) {
-                    dialogs::show_error(&window_error, &format!("Could not rename: {err}"));
-                }
-                if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                    refresh_tab(
-                        &tab_state,
-                        &store,
-                        &ctx,
-                        &location_entry,
-                        &search_entry,
-                        &hidden_toggle,
-                        &sidebar_list,
-                    );
-                    update_watcher(&notebook, &watcher_manager);
-                }
-            });
+            dialogs::show_text_dialog(
+                &window_for_dialog,
+                "Rename",
+                &initial_name,
+                "Rename",
+                move |name| {
+                    if name.is_empty() {
+                        return;
+                    }
+                    if let Err(err) = operations::rename::rename_path(&source, &name) {
+                        dialogs::show_error(&window_error, &format!("Could not rename: {err}"));
+                    }
+                    if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                        refresh_tab(
+                            &tab_state,
+                            &store,
+                            &ctx,
+                            &location_entry,
+                            &search_entry,
+                            &hidden_toggle,
+                            &sidebar_list,
+                        );
+                        update_watcher(&notebook, &watcher_manager);
+                    }
+                },
+            );
         });
     }
 
