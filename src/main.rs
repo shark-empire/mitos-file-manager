@@ -28,6 +28,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use app::context::AppContext;
@@ -505,7 +506,7 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
             }
         }
 
-        if let Err(err) = result {
+        if let Err(ref err) = result {
             if !err.contains("Cancelled") {
                 dialogs::show_error(&window_error, &format!("Job failed: {err}"));
             }
@@ -538,8 +539,10 @@ fn refresh_tab(
     hidden_toggle: &CheckButton,
     sidebar_list: &ListBox,
 ) {
-    let mut s = tab_state.borrow_mut();
-    let current = s.current.clone();
+    let (current, search_query, show_hidden) = {
+        let s = tab_state.borrow();
+        (s.current.clone(), s.search_query.clone(), s.show_hidden)
+    };
 
     if let Some(crumbs) = get_obj_data::<_, GtkBox>(location_entry, "path-crumbs") {
         ui::path_bar::update(&crumbs, location_entry, &current);
@@ -547,18 +550,18 @@ fn refresh_tab(
         location_entry.set_text(&current.display().to_string());
     }
 
-    if search_entry.text().as_str() != s.search_query {
-        search_entry.set_text(&s.search_query);
+    if search_entry.text().as_str() != search_query {
+        search_entry.set_text(&search_query);
     }
 
-    if hidden_toggle.is_active() != s.show_hidden {
-        hidden_toggle.set_active(s.show_hidden);
+    if hidden_toggle.is_active() != show_hidden {
+        hidden_toggle.set_active(show_hidden);
     }
 
-    let mut items = directory::read_items(&current, s.show_hidden);
+    let mut items = directory::read_items(&current, show_hidden);
 
-    if !s.search_query.is_empty() {
-        let q = s.search_query.to_lowercase();
+    if !search_query.is_empty() {
+        let q = search_query.to_lowercase();
         items.retain(|item| item.name.to_lowercase().contains(&q));
     }
 
@@ -571,12 +574,12 @@ fn refresh_tab(
     let item_count = items.len();
 
     grid_view::render(store, &items);
-    s.items = items;
+    tab_state.borrow_mut().items = items;
 
     if let Some(stack) = get_obj_data::<_, gtk::Stack>(store, "view-stack") {
         if let Some(empty_widget) = stack.child_by_name("empty") {
             if let Some(empty_lbl) = empty_widget.downcast_ref::<Label>() {
-                empty_lbl.set_label(if s.search_query.is_empty() {
+                empty_lbl.set_label(if search_query.is_empty() {
                     "This folder is empty"
                 } else {
                     "No results found"
@@ -808,7 +811,6 @@ fn add_tab(
     {
         let window_error = window.clone();
         let tab_state = tab_state.clone();
-        let store = store.clone();
         let ctx = ctx.clone();
         let location_entry = location_entry.clone();
         let search_entry = search_entry.clone();
@@ -827,8 +829,6 @@ fn add_tab(
                 return false;
             };
 
-            // This target only ever accepts DragAction::COPY (see how it was
-            // constructed above), so any drop it receives is a copy.
             let is_copy = true;
 
             let files = file_list.files();
@@ -1043,8 +1043,6 @@ fn add_tab(
                 return false;
             };
 
-            // This target only ever accepts DragAction::COPY (see how it was
-            // constructed above), so any drop it receives is a copy.
             let is_copy = true;
             let files = file_list.files();
             if files.is_empty() {
@@ -1125,7 +1123,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
 
     let theme_mode = config::settings::theme_mode();
-    ui::theme::apply_theme(&gtk::prelude::WidgetExt::display(&window), theme_mode);
+    ui::theme::apply_theme(&window.display(), theme_mode);
 
     let portal_rx = portal::service::start();
 
@@ -1262,7 +1260,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
     let split_pane = ui::split_pane::build(locations::home_dir());
     split_pane.container.set_visible(false);
-    content.append(&split_pane.container.clone());
+    content.append(&split_pane.container);
 
     let split_state = split_pane.state.clone();
     let split_store = split_pane.store.clone();
@@ -1354,9 +1352,10 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         glib::MainContext::default().spawn_local(async move {
             while let Ok(shared_config) = config_rx.recv().await {
                 // Apply theme if changed
-                let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
-                if let Some(display) = gdk::Display::default() {
-                    crate::ui::theme::apply_theme(&display, theme_mode);
+                if let Ok(theme_mode) = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode) {
+                    if let Some(display) = gdk::Display::default() {
+                        crate::ui::theme::apply_theme(&display, theme_mode);
+                    }
                 }
 
                 // Refresh current tab
@@ -1606,7 +1605,8 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                             let item = selected[0].clone();
                             let source = item.get_path();
                             let initial_name = item.name();
-                            let window_clone = window.clone();
+                            let window_dialog = window.clone();
+                            let window_err = window.clone();
                             let notebook_clone = notebook.clone();
                             let ctx_clone = ctx.clone();
                             let location_entry_clone = location_entry.clone();
@@ -1616,7 +1616,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                             let watcher_manager_clone = watcher_manager.clone();
 
                             dialogs::show_text_dialog(
-                                &window_clone,
+                                &window_dialog,
                                 "Rename",
                                 &initial_name,
                                 "Rename",
@@ -1628,7 +1628,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                                         operations::rename::rename_path(&source, &name)
                                     {
                                         dialogs::show_error(
-                                            &window_clone,
+                                            &window_err,
                                             &format!("Could not rename: {err}"),
                                         );
                                     }
@@ -1758,21 +1758,23 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                     glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
                         let rx = rx.lock().unwrap();
 
-                        if let Ok(results) = rx.try_recv() {
-                            let items: Vec<crate::filesystem::directory::Item> =
-                                results.into_iter().map(|r| r.item).collect();
+                        match rx.try_recv() {
+                            Ok(results) => {
+                                let items: Vec<crate::filesystem::directory::Item> =
+                                    results.into_iter().map(|r| r.item).collect();
 
-                            let mut s = tab_state.borrow_mut();
-                            s.search_query = query.clone();
-                            s.items = items.clone();
-                            drop(s);
+                                let mut s = tab_state.borrow_mut();
+                                s.search_query = query.clone();
+                                s.items = items.clone();
+                                drop(s);
 
-                            crate::ui::grid_view::render(&store, &items);
+                                crate::ui::grid_view::render(&store, &items);
 
-                            return glib::ControlFlow::Break;
+                                glib::ControlFlow::Break
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+                            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
                         }
-
-                        glib::ControlFlow::Continue
                     });
                 } else {
                     tab_state.borrow_mut().search_query = query.clone();
@@ -1837,7 +1839,6 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
         sidebar_list.connect_row_activated(move |_, row| {
             if let Some(path) = sidebar::resolve_click(row) {
-                // Recent entries are files → open them instead of navigating
                 if path.is_file() {
                     open_file_default(&path);
                     return;
@@ -1924,10 +1925,8 @@ fn build_ui(app: &Application, initial_args: &[String]) {
             if !path_str.is_empty() {
                 let path = PathBuf::from(path_str.as_str());
 
-                // Toggle folder expansion in the tree
                 ui::tree_view::toggle_folder(&tree_state, &tree_list, path.clone());
 
-                // Navigate the active tab to the clicked folder
                 if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                     navigate_to(&tab_state, path);
                     refresh_tab(
@@ -2633,78 +2632,81 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     {
         let window = window.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-            while let Ok(request) = portal_rx.try_recv() {
-                match request {
-                    portal::service::PortalRequest::OpenFile { title, response_tx } => {
-                        let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
-                        let response_tx = response_tx.clone();
-                        dialog.open(
-                            Some(&window),
-                            None::<&gtk::gio::Cancellable>,
-                            move |result| match result {
+            loop {
+                match portal_rx.try_recv() {
+                    Ok(request) => match request {
+                        portal::service::PortalRequest::OpenFile { title, response_tx } => {
+                            let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
+                            let response_tx = response_tx.clone();
+                            dialog.open(
+                                Some(&window),
+                                None::<&gtk::gio::Cancellable>,
+                                move |result| match result {
+                                    Ok(file) => {
+                                        let path = file
+                                            .path()
+                                            .map(|p| p.display().to_string())
+                                            .unwrap_or_default();
+                                        let _ = response_tx.send(
+                                            portal::service::PortalResponse::Selected(vec![path]),
+                                        );
+                                    }
+                                    Err(_) => {
+                                        let _ = response_tx
+                                            .send(portal::service::PortalResponse::Cancelled);
+                                    }
+                                },
+                            );
+                        }
+                        portal::service::PortalRequest::SaveFile {
+                            title,
+                            default_name,
+                            response_tx,
+                        } => {
+                            let dialog = gtk::FileDialog::builder()
+                                .title(&title)
+                                .initial_name(&default_name)
+                                .modal(true)
+                                .build();
+                            let response_tx = response_tx.clone();
+                            dialog.save(Some(&window), None::<&gtk::gio::Cancellable>, move |result| match result {
                                 Ok(file) => {
                                     let path = file
                                         .path()
                                         .map(|p| p.display().to_string())
                                         .unwrap_or_default();
-                                    let _ = response_tx.send(
-                                        portal::service::PortalResponse::Selected(vec![path]),
-                                    );
+                                    let _ = response_tx
+                                        .send(portal::service::PortalResponse::Selected(vec![path]));
                                 }
                                 Err(_) => {
-                                    let _ = response_tx
-                                        .send(portal::service::PortalResponse::Cancelled);
+                                    let _ =
+                                        response_tx.send(portal::service::PortalResponse::Cancelled);
                                 }
-                            },
-                        );
-                    }
-                    portal::service::PortalRequest::SaveFile {
-                        title,
-                        default_name,
-                        response_tx,
-                    } => {
-                        let dialog = gtk::FileDialog::builder()
-                            .title(&title)
-                            .initial_name(&default_name)
-                            .modal(true)
-                            .build();
-                        let response_tx = response_tx.clone();
-                        dialog.save(Some(&window), None, move |result| match result {
-                            Ok(file) => {
-                                let path = file
-                                    .path()
-                                    .map(|p| p.display().to_string())
-                                    .unwrap_or_default();
-                                let _ = response_tx
-                                    .send(portal::service::PortalResponse::Selected(vec![path]));
-                            }
-                            Err(_) => {
-                                let _ =
-                                    response_tx.send(portal::service::PortalResponse::Cancelled);
-                            }
-                        });
-                    }
-                    portal::service::PortalRequest::OpenFolder { title, response_tx } => {
-                        let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
-                        let response_tx = response_tx.clone();
-                        dialog.select_folder(Some(&window), None, move |result| match result {
-                            Ok(file) => {
-                                let path = file
-                                    .path()
-                                    .map(|p| p.display().to_string())
-                                    .unwrap_or_default();
-                                let _ = response_tx
-                                    .send(portal::service::PortalResponse::Selected(vec![path]));
-                            }
-                            Err(_) => {
-                                let _ =
-                                    response_tx.send(portal::service::PortalResponse::Cancelled);
-                            }
-                        });
-                    }
+                            });
+                        }
+                        portal::service::PortalRequest::OpenFolder { title, response_tx } => {
+                            let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
+                            let response_tx = response_tx.clone();
+                            dialog.select_folder(Some(&window), None::<&gtk::gio::Cancellable>, move |result| match result {
+                                Ok(file) => {
+                                    let path = file
+                                        .path()
+                                        .map(|p| p.display().to_string())
+                                        .unwrap_or_default();
+                                    let _ = response_tx
+                                        .send(portal::service::PortalResponse::Selected(vec![path]));
+                                }
+                                Err(_) => {
+                                    let _ =
+                                        response_tx.send(portal::service::PortalResponse::Cancelled);
+                                }
+                            });
+                        }
+                    },
+                    Err(async_channel::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                    Err(async_channel::TryRecvError::Closed) => return glib::ControlFlow::Break,
                 }
             }
-            glib::ControlFlow::Continue
         });
     }
 
@@ -2830,7 +2832,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         let search_entry = search_entry.clone();
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
-        let watcher_manager = watcher_manager.clone();
+        let _watcher_manager = watcher_manager.clone();
         let item = single_item.clone();
         let window = window.clone();
 
@@ -2909,6 +2911,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         let single_item = single_item.clone();
 
         open_with_btn.connect_clicked(move |_| {
+            popover.popdown();
             let Some(item) = single_item.clone() else {
                 return;
             };
@@ -3123,35 +3126,34 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
             let source = item.get_path();
             let initial_name = item.name();
 
-            dialogs::show_text_dialog(&window, "Rename", &initial_name, "Rename", {
-                let window = window.clone();
-                let notebook = notebook.clone();
-                let ctx = ctx.clone();
-                let location_entry = location_entry.clone();
-                let search_entry = search_entry.clone();
-                let hidden_toggle = hidden_toggle.clone();
-                let sidebar_list = sidebar_list.clone();
-                let watcher_manager = watcher_manager.clone();
+            let window_for_dialog = window.clone();
+            let window_error = window.clone();
+            let notebook = notebook.clone();
+            let ctx = ctx.clone();
+            let location_entry = location_entry.clone();
+            let search_entry = search_entry.clone();
+            let hidden_toggle = hidden_toggle.clone();
+            let sidebar_list = sidebar_list.clone();
+            let watcher_manager = watcher_manager.clone();
 
-                move |name| {
-                    if name.is_empty() {
-                        return;
-                    }
-                    if let Err(err) = operations::rename::rename_path(&source, &name) {
-                        dialogs::show_error(&window, &format!("Could not rename: {err}"));
-                    }
-                    if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                        refresh_tab(
-                            &tab_state,
-                            &store,
-                            &ctx,
-                            &location_entry,
-                            &search_entry,
-                            &hidden_toggle,
-                            &sidebar_list,
-                        );
-                        update_watcher(&notebook, &watcher_manager);
-                    }
+            dialogs::show_text_dialog(&window_for_dialog, "Rename", &initial_name, "Rename", move |name| {
+                if name.is_empty() {
+                    return;
+                }
+                if let Err(err) = operations::rename::rename_path(&source, &name) {
+                    dialogs::show_error(&window_error, &format!("Could not rename: {err}"));
+                }
+                if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                    refresh_tab(
+                        &tab_state,
+                        &store,
+                        &ctx,
+                        &location_entry,
+                        &search_entry,
+                        &hidden_toggle,
+                        &sidebar_list,
+                    );
+                    update_watcher(&notebook, &watcher_manager);
                 }
             });
         });
@@ -3245,7 +3247,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
 }
 
 fn show_sidebar_context_menu(
-    window: &ApplicationWindow,
+    _window: &ApplicationWindow,
     notebook: &Notebook,
     ctx: &Rc<RefCell<AppContext>>,
     sidebar_list: &ListBox,
@@ -3400,8 +3402,9 @@ fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
 
 fn filesystem_free_string(path: &std::path::Path) -> String {
     let file = gio::File::for_path(path);
-    if let Ok(info) = file.query_filesystem_info("filesystem::free", gio::Cancellable::NONE) {
-        if let Some(free) = info.attribute_uint64("filesystem::free") {
+    if let Ok(info) = file.query_filesystem_info("filesystem::free", None::<&gio::Cancellable>) {
+        let free = info.attribute_uint64("filesystem::free");
+        if free > 0 {
             return metadata::format_size(free);
         }
     }
@@ -3437,7 +3440,7 @@ fn typeahead_select(
                 grid.scroll_to(
                     i,
                     gtk::ListScrollFlags::SELECT | gtk::ListScrollFlags::FOCUS,
-                    None,
+                    None::<&gtk::ScrollInfo>,
                 );
                 break;
             }
