@@ -218,7 +218,7 @@ fn build_permissions_tab(item: &ItemObject) -> gtk::Widget {
 // OPEN WITH
 // ============================================================================
 
-fn build_open_with_tab(window: &gtk::ApplicationWindow, item: &ItemObject) -> gtk::Widget {
+fn build_open_with_tab(window: &gtk::Window, item: &ItemObject) -> gtk::Widget {
     let mime = item.mime_type();
     let apps = crate::mime::applications::apps_for_mime(&mime);
 

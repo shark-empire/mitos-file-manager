@@ -14,8 +14,8 @@ pub fn build() -> (GtkBox, Stack, GtkBox, Entry) {
     let entry = Entry::new();
     entry.set_hexpand(true);
 
-    stack.add_named(&crumbs, "crumbs");
-    stack.add_named(&entry, "entry");
+    stack.add_named(&crumbs, Some("crumbs"));
+    stack.add_named(&entry, Some("entry"));
     stack.set_visible_child_name("crumbs");
 
     let edit_btn = Button::with_label("Edit");

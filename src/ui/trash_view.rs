@@ -82,7 +82,7 @@ pub fn show(parent: &ApplicationWindow, refresh_main: Rc<dyn Fn()>) {
     window.present();
 }
 
-fn populate(list: &ListBox, parent: &ApplicationWindow, refresh_main: Rc<dyn Fn()>) {
+fn populate(list: &ListBox, parent: &gtk::Window, refresh_main: Rc<dyn Fn()>) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
     }
@@ -144,7 +144,7 @@ fn populate(list: &ListBox, parent: &ApplicationWindow, refresh_main: Rc<dyn Fn(
     }
 }
 
-fn confirm_empty(parent: &ApplicationWindow) -> bool {
+fn confirm_empty(parent: &gtk::Window) -> bool {
     let dialog = gtk::Dialog::builder()
         .title("Empty Trash")
         .transient_for(parent)

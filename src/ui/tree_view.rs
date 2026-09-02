@@ -140,7 +140,7 @@ fn create_tree_row(path: &Path, depth: usize, is_expanded: bool) -> ListBoxRow {
     row.set_child(Some(&row_box));
 
     // Store the path in the row name for later retrieval
-    row.set_name(&path.display().to_string());
+    row.set_widget_name(&path.display().to_string());
 
     row
 }

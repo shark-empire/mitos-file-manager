@@ -1,6 +1,7 @@
 use gtk::prelude::*;
 
 use crate::ui::item_object::ItemObject;
+use crate::util::{get_obj_data, set_obj_data};
 
 pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
     let view = gtk::ColumnView::new(Some(selection.clone()));
@@ -27,8 +28,8 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
         row.append(&label);
 
         list_item.set_child(Some(&row));
-        list_item.set_data("icon", icon);
-        list_item.set_data("label", label);
+        set_obj_data(list_item, "icon", icon);
+        set_obj_data(list_item, "label", label);
     });
 
     name_factory.connect_bind(|_, list_item| {
@@ -41,10 +42,10 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
             return;
         };
 
-        if let (Some(icon), Some(label)) = (
-            list_item.data::<gtk::Image>("icon"),
-            list_item.data::<gtk::Label>("label"),
-        ) {
+        let icon: Option<gtk::Image> = get_obj_data(list_item, "icon");
+        let label: Option<gtk::Label> = get_obj_data(list_item, "label");
+
+        if let (Some(icon), Some(label)) = (icon, label) {
             icon.set_icon_name(Some(&obj.icon_name()));
             label.set_label(&obj.name());
         }
@@ -62,7 +63,7 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
         a.cmp(&b)
     });
 
-    let name_column = gtk::ColumnViewColumn::new("Name", Some(name_factory));
+    let name_column = gtk::ColumnViewColumn::new(Some("Name"), Some(&name_factory));
     name_column.set_sorter(Some(&name_sorter));
     name_column.set_resizable(true);
     name_column.set_expand(true);
@@ -136,7 +137,7 @@ where
         }
     });
 
-    let column = gtk::ColumnViewColumn::new(title, Some(factory));
+    let column = gtk::ColumnViewColumn::new(Some(title), Some(&factory));
     column.set_sorter(Some(&sorter));
     column.set_resizable(true);
     column

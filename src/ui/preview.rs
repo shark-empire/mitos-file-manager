@@ -5,6 +5,9 @@ use gtk::{
 use std::fs;
 use std::io::Read;
 
+use crate::util::{get_obj_data, set_obj_data};
+
+#[derive(Clone)]
 struct PreviewWidgets {
     stack: Stack,
     image: Picture,
@@ -99,7 +102,7 @@ pub fn build() -> (ScrolledWindow, GtkBox) {
         permissions_label,
     };
 
-    container.set_data("preview-widgets", widgets);
+    set_obj_data(&container, "preview-widgets", widgets);
 
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -114,7 +117,7 @@ pub fn build() -> (ScrolledWindow, GtkBox) {
 }
 
 pub fn update(container: &GtkBox, item: Option<&crate::ui::item_object::ItemObject>) {
-    let Some(widgets) = container.data::<PreviewWidgets>("preview-widgets") else {
+    let Some(widgets) = get_obj_data::<_, PreviewWidgets>(container, "preview-widgets") else {
         return;
     };
 

@@ -43,7 +43,7 @@ pub fn show_text_dialog<F>(
     dialog.present();
 }
 
-pub fn show_error(parent: &ApplicationWindow, message: &str) {
+pub fn show_error(parent: &impl IsA<gtk::Window>, message: &str) {
     let dialog = Dialog::builder()
         .title("Error")
         .transient_for(parent)

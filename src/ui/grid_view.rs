@@ -3,6 +3,7 @@ use gtk::prelude::*;
 
 use crate::filesystem::directory::Item;
 use crate::ui::item_object::ItemObject;
+use crate::util::{get_obj_data, set_obj_data};
 
 pub fn create_model() -> (gio::ListStore, gtk::MultiSelection) {
     let store = gio::ListStore::new::<ItemObject>();
@@ -14,7 +15,11 @@ pub fn create_model() -> (gio::ListStore, gtk::MultiSelection) {
 pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
     let factory = gtk::SignalListItemFactory::new();
 
-    factory.connect_setup(move |_, item, _| {
+    factory.connect_setup(move |_, item| {
+        let item = item
+            .downcast_ref::<gtk::ListItem>()
+            .expect("Needs to be ListItem");
+
         let container = gtk::Box::new(gtk::Orientation::Vertical, 4);
 
         container.set_width_request(110);
@@ -56,19 +61,23 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
 
         item.set_child(Some(&container));
 
-        item.set_data("stack", stack);
-        item.set_data("icon", icon);
-        item.set_data("picture", picture);
-        item.set_data("label", label);
+        set_obj_data(item, "stack", stack);
+        set_obj_data(item, "icon", icon);
+        set_obj_data(item, "picture", picture);
+        set_obj_data(item, "label", label);
     });
 
     factory.connect_bind(move |_, item| {
+        let item = item
+            .downcast_ref::<gtk::ListItem>()
+            .expect("Needs to be ListItem");
+
         let item_obj = item.item().and_downcast::<ItemObject>().unwrap();
 
-        let stack = item.data::<gtk::Stack>("stack").unwrap();
-        let icon = item.data::<gtk::Image>("icon").unwrap();
-        let picture = item.data::<gtk::Picture>("picture").unwrap();
-        let label = item.data::<gtk::Label>("label").unwrap();
+        let stack: gtk::Stack = get_obj_data(item, "stack").unwrap();
+        let icon: gtk::Image = get_obj_data(item, "icon").unwrap();
+        let picture: gtk::Picture = get_obj_data(item, "picture").unwrap();
+        let label: gtk::Label = get_obj_data(item, "label").unwrap();
 
         icon.set_icon_name(Some(&item_obj.icon_name()));
         label.set_label(&item_obj.name());
@@ -84,7 +93,7 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
         }
     });
 
-    let grid_view = gtk::GridView::new(Some(selection), Some(factory));
+    let grid_view = gtk::GridView::new(Some(selection.clone()), Some(factory));
 
     grid_view.set_max_columns(20);
     grid_view.set_min_columns(3);

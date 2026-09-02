@@ -187,7 +187,7 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
 
             row.set_child(Some(&row_box));
             // We use the "place:" prefix so the main click handler knows to navigate to it
-            row.set_name(&format!("place:{}", path.display()));
+            row.set_widget_name(&format!("place:{}", path.display()));
             list.append(&row);
         }
     }
@@ -247,13 +247,13 @@ fn add_row(
         format!("place:{}", path.display())
     };
 
-    row.set_name(&row_name);
+    row.set_widget_name(&row_name);
     list.append(&row);
 }
 
 /// Helper for main.rs to resolve what path was clicked
 pub fn resolve_click(row: &ListBoxRow) -> Option<PathBuf> {
-    let name = row.name()?;
+    let name = row.widget_name();
 
     if let Some(path_str) = name.strip_prefix("place:") {
         Some(PathBuf::from(path_str))

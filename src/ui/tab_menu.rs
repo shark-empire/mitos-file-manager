@@ -1,12 +1,12 @@
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Button, Notebook, Orientation, Popover};
 
-pub fn show_tab_context_menu(notebook: &Notebook, page_widget: &gtk::Widget, x: f64, y: f64) {
+pub fn show_tab_context_menu(notebook: &Notebook, page_widget: &impl IsA<gtk::Widget>, x: f64, y: f64) {
     let popover = Popover::new();
     popover.set_has_arrow(true);
     popover.set_autohide(true);
     popover.set_parent(notebook);
-    popover.set_pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1));
+    popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
 
     let menu_box = GtkBox::new(Orientation::Vertical, 4);
     menu_box.set_margin_top(4);
@@ -33,7 +33,7 @@ pub fn show_tab_context_menu(notebook: &Notebook, page_widget: &gtk::Widget, x: 
 
     close_btn.connect_clicked(move |_| {
         if let Some(page_num) = notebook_clone.page_num(&page_widget_clone) {
-            notebook_clone.remove_page(page_num);
+            notebook_clone.remove_page(Some(page_num));
         }
         popover.popdown();
     });
@@ -47,7 +47,7 @@ pub fn show_tab_context_menu(notebook: &Notebook, page_widget: &gtk::Widget, x: 
         let mut i = 0;
         while i < notebook_clone2.n_pages() {
             if Some(i) != keep_page {
-                notebook_clone2.remove_page(i);
+                notebook_clone2.remove_page(Some(i));
             } else {
                 i += 1;
             }
@@ -60,7 +60,7 @@ pub fn show_tab_context_menu(notebook: &Notebook, page_widget: &gtk::Widget, x: 
 
     close_all_btn.connect_clicked(move |_| {
         while notebook_clone3.n_pages() > 0 {
-            notebook_clone3.remove_page(0);
+            notebook_clone3.remove_page(Some(0));
         }
 
         popover.popdown();
