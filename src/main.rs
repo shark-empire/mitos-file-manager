@@ -2638,7 +2638,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                     portal::service::PortalRequest::OpenFile { title, response_tx } => {
                         let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
                         let response_tx = response_tx.clone();
-                        dialog.open(Some(&window), None, move |result| match result {
+                        dialog.open(Some(&window), None::<&gtk::gio::Cancellable>, move |result| match result {
                             Ok(file) => {
                                 let path = file
                                     .path()
