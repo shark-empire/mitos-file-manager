@@ -63,7 +63,7 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
         a.cmp(&b).into()
     });
 
-    let name_column = gtk::ColumnViewColumn::new(Some("Name"), Some(name_factory.clone()));
+    let name_column = gtk::ColumnViewColumn::new(Some("Name"), Some(name_factory));
     name_column.set_sorter(Some(&name_sorter));
     name_column.set_resizable(true);
     name_column.set_expand(true);
@@ -132,14 +132,15 @@ where
             a.downcast_ref::<ItemObject>(),
             b.downcast_ref::<ItemObject>(),
         ) {
-            (Some(a), Some(b)) => cmp(a, b),
-            _ => std::cmp::Ordering::Equal,
+            (Some(a), Some(b)) => cmp(a, b).into(),
+            _ => std::cmp::Ordering::Equal.into(),
         }
     });
 
-    let name_column = gtk::ColumnViewColumn::new(Some("Name"), Some(name_factory.clone()));
+    let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
 
     column.set_sorter(Some(&sorter));
     column.set_resizable(true);
+    
     column
 }
