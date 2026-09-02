@@ -3174,7 +3174,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
                         );
                         update_watcher(&notebook, &watcher_manager);
                     }
-                }
+                },
             );
         });
     }
@@ -3193,8 +3193,11 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
 
         batch_rename_btn.connect_clicked(move |_| {
             popover.popdown();
-            let renames: Vec<(PathBuf, PathBuf)> = items_clone.iter().map(|i| (i.get_path(), i.get_path())).collect();
-            
+            let renames: Vec<(PathBuf, PathBuf)> = items_clone
+                .iter()
+                .map(|i| (i.get_path(), i.get_path()))
+                .collect();
+
             start_batch_rename_job_ui(
                 &window,
                 &notebook,
@@ -3325,7 +3328,9 @@ fn show_sidebar_context_menu(
         let mut c = ctx_clone.borrow_mut();
         c.bookmarks.retain(|b| b.path != path_clone);
         drop(c);
-        if let Some(win) = get_obj_data::<_, gtk::ApplicationWindow>(&location_entry_clone, "main-window") {
+        if let Some(win) =
+            get_obj_data::<_, gtk::ApplicationWindow>(&location_entry_clone, "main-window")
+        {
             sidebar::build(&sidebar_list_clone, &ctx_clone.borrow().bookmarks, &win);
         }
     });
@@ -3341,5 +3346,8 @@ fn show_default_app_picker(
     mime: &str,
 ) {
     // Basic dialog stub to set default MIME type action
-    crate::ui::dialogs::show_error(window, &format!("Setting default app for {} is not yet implemented.", mime));
+    crate::ui::dialogs::show_error(
+        window,
+        &format!("Setting default app for {} is not yet implemented.", mime),
+    );
 }
