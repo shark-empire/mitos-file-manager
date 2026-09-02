@@ -1,7 +1,12 @@
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Button, Notebook, Orientation, Popover};
 
-pub fn show_tab_context_menu(notebook: &Notebook, page_widget: &impl IsA<gtk::Widget>, x: f64, y: f64) {
+pub fn show_tab_context_menu(
+    notebook: &Notebook,
+    page_widget: &impl IsA<gtk::Widget>,
+    x: f64,
+    y: f64,
+) {
     let popover = Popover::new();
     popover.set_has_arrow(true);
     popover.set_autohide(true);
