@@ -141,6 +141,6 @@ where
 
     column.set_sorter(Some(&sorter));
     column.set_resizable(true);
-    
+
     column
 }
