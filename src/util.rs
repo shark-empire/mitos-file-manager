@@ -1,7 +1,6 @@
 use gtk::glib;
 use gtk::glib::object::ObjectExt;
 
-
 /// Store typed Rust-side data on a GObject's qdata.
 ///
 /// This is the one place `ObjectExt::set_data` (an `unsafe fn` — it doesn't
