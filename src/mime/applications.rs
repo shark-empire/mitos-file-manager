@@ -9,7 +9,7 @@ pub fn apps_for_mime(mime: &str) -> Vec<gio::AppInfo> {
 
 /// Get the default application for a MIME type.
 pub fn default_app_for_mime(mime: &str) -> Option<gio::AppInfo> {
-    gio::AppInfo::default_for_type(mime).ok()
+    gio::AppInfo::default_for_type(mime, false)
 }
 
 /// Set an application as the default for a MIME type.
@@ -20,7 +20,7 @@ pub fn set_default_app(app: &gio::AppInfo, mime: &str) -> Result<(), String> {
 /// Launch an application with a file.
 pub fn launch_app_with_file(app: &gio::AppInfo, path: &Path) -> Result<(), String> {
     let file = gio::File::for_path(path);
-    app.launch(&[&file], None::<&gio::AppLaunchContext>)
+    app.launch(&[file], None::<&gio::AppLaunchContext>)
         .map_err(|e| e.to_string())
 }
 
@@ -32,7 +32,7 @@ pub fn app_display_names(apps: &[gio::AppInfo]) -> Vec<(String, gio::AppInfo)> {
             if name.is_empty() {
                 None
             } else {
-                Some((name, app.clone()))
+                Some((name.to_string(), app.clone()))
             }
         })
         .collect()

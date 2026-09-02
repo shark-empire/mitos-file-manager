@@ -6,11 +6,10 @@ pub fn icon_name_for_mime(mime: &str, is_dir: bool) -> String {
         return "folder".to_string();
     }
 
-    if let Some(icon) = gio::content_type_get_icon(mime) {
-        if let Some(themed) = icon.downcast_ref::<gio::ThemedIcon>() {
-            if let Some(name) = themed.names().first() {
-                return name.to_string();
-            }
+    let icon = gio::content_type_get_icon(mime);
+    if let Some(themed) = icon.downcast_ref::<gio::ThemedIcon>() {
+        if let Some(name) = themed.names().first() {
+            return name.to_string();
         }
     }
 

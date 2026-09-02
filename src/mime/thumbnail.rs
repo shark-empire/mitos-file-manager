@@ -27,7 +27,7 @@ fn freedesktop_thumbnail_path(path: &Path) -> Option<PathBuf> {
     let file = gio::File::for_path(path);
     let uri = file.uri().to_string();
 
-    let hash = glib::Checksum::compute_checksum_for_string(glib::ChecksumType::Md5, &uri)?;
+    let hash = glib::compute_checksum_for_string(glib::ChecksumType::Md5, &uri)?;
 
     let cache = home.join(".cache/thumbnails");
 

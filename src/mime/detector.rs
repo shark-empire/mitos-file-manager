@@ -21,5 +21,5 @@ pub fn guess_mime(path: &Path) -> String {
 
     let (content_type, _uncertain) = gio::content_type_guess(path.to_str(), &[]);
 
-    content_type
+    content_type.to_string()
 }
