@@ -2638,20 +2638,25 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                     portal::service::PortalRequest::OpenFile { title, response_tx } => {
                         let dialog = gtk::FileDialog::builder().title(&title).modal(true).build();
                         let response_tx = response_tx.clone();
-                        dialog.open(Some(&window), None::<&gtk::gio::Cancellable>, move |result| match result {
-                            Ok(file) => {
-                                let path = file
-                                    .path()
-                                    .map(|p| p.display().to_string())
-                                    .unwrap_or_default();
-                                let _ = response_tx
-                                    .send(portal::service::PortalResponse::Selected(vec![path]));
-                            }
-                            Err(_) => {
-                                let _ =
-                                    response_tx.send(portal::service::PortalResponse::Cancelled);
-                            }
-                        });
+                        dialog.open(
+                            Some(&window),
+                            None::<&gtk::gio::Cancellable>,
+                            move |result| match result {
+                                Ok(file) => {
+                                    let path = file
+                                        .path()
+                                        .map(|p| p.display().to_string())
+                                        .unwrap_or_default();
+                                    let _ = response_tx.send(
+                                        portal::service::PortalResponse::Selected(vec![path]),
+                                    );
+                                }
+                                Err(_) => {
+                                    let _ = response_tx
+                                        .send(portal::service::PortalResponse::Cancelled);
+                                }
+                            },
+                        );
                     }
                     portal::service::PortalRequest::SaveFile {
                         title,
