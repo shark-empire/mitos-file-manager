@@ -1843,7 +1843,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
 
+        let sidebar_list_for_closure = sidebar_list.clone();
         sidebar_list.connect_row_activated(move |_, row| {
+            let _ = &sidebar_list_for_closure; 
             if let Some(path) = sidebar::resolve_click(row) {
                 if path.is_file() {
                     open_file_default(&path);
@@ -1865,6 +1867,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                 }
             }
         });
+        sidebar_list.add_controller(right_click);
     }
 
     {
@@ -1879,7 +1882,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let right_click = gtk::GestureClick::new();
         right_click.set_button(3);
 
+        let sidebar_list_for_closure = sidebar_list.clone();
         right_click.connect_pressed(move |_gesture, _n_press, x, y| {
+             let _ = &sidebar_list_for_closure; 
             if let Some(row) = sidebar_list.row_at_y(y as i32) {
                 let name = row.widget_name();
                 if let Some(path_str) = name.strip_prefix("bm:") {
@@ -1888,7 +1893,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                         &window,
                         &notebook,
                         &ctx,
-                        &sidebar_list,
+                        &sidebar_list-closure,
                         &location_entry,
                         &search_entry,
                         &hidden_toggle,
@@ -1926,7 +1931,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let tree_list = tree_list.clone();
         let tree_state = tree_state.clone();
 
+        let sidebar_list_for_closure = sidebar_list.clone();
         tree_list.connect_row_activated(move |_, row| {
+               let _ = &sidebar_list_for_closure; 
             let path_str = row.widget_name();
             if !path_str.is_empty() {
                 let path = PathBuf::from(path_str.as_str());
@@ -1948,6 +1955,8 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                 }
             }
         });
+        sidebar_list again
+sidebar_list.add_controller(right_click);
     }
 
     // New Window Button
@@ -2134,11 +2143,13 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
 
+        let sidebar_list_for_closure = sidebar_list.clone();
         hidden_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
             config::settings::set_show_hidden(is_active);
 
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                 let _ = &sidebar_list_for_closure; 
                 if tab_state.borrow().show_hidden != is_active {
                     tab_state.borrow_mut().show_hidden = is_active;
                     refresh_tab(
@@ -2148,12 +2159,14 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                         &location_entry,
                         &search_entry,
                         &hidden_toggle,
-                        &sidebar_list,
+                        &sidebar_list_for_closure,
                     );
                     update_watcher(&notebook, &watcher_manager);
                 }
             }
         });
+        sidebar_list again
+sidebar_list.add_controller(right_click);
     }
 
     {
@@ -3280,7 +3293,7 @@ fn typeahead_select(
 
 fn filesystem_free_string(path: &PathBuf) -> String {
     if let Ok(info) = std::fs::symlink_metadata(path) {
-        metadata::format_size(info.available)
+        metadata::format_size(info.len())
     } else {
         String::from("Unknown")
     }
