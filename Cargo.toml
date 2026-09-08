@@ -17,4 +17,4 @@ zip = "2.2"
 tar = "0.4"
 flate2 = "1.0"
 zbus = { version = "4", features = ["blocking"] }
-
+mitos-utils = { git = "https://github.com/shark-empire/mitos-utils"}
