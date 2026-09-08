@@ -972,14 +972,15 @@ fn add_tab(
         let right_click = gtk::GestureClick::new();
         right_click.set_button(3);
 
+        let list_view_for_closure = list_view.clone();
         right_click.connect_pressed(move |_gesture, _n_press, x, y| {
             let items = grid_view::selected_items(&selection, &store);
             if !items.is_empty() {
-                show_context_menu(
+              let menu =  show_context_menu(
                     &window,
                     &notebook,
                     &ctx,
-                    &list_view,
+                    &list_view_for_closure,
                     &store,
                     &selection,
                     &location_entry,
