@@ -21,6 +21,7 @@ use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Entry, Label, ListBox,
     Notebook, Orientation, ScrolledWindow, SearchEntry, SelectionMode,
 };
+use gtk::prelude::WidgetExt; 
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -1127,7 +1128,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
 
     let theme_mode = config::settings::theme_mode();
-    ui::theme::apply_theme(&window.display(), theme_mode);
+    ui::theme::apply_theme(&WidgetExt::display(&window), theme_mode);
 
     let portal_rx = portal::service::start();
 
@@ -1356,13 +1357,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         glib::MainContext::default().spawn_local(async move {
             while let Ok(shared_config) = config_rx.recv().await {
                 // Apply theme if changed
-                if let Ok(theme_mode) =
-                    crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode)
-                {
-                    if let Some(display) = gdk::Display::default() {
-                        crate::ui::theme::apply_theme(&display, theme_mode);
-                    }
-                }
+            let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
+            // ... (remove the wrapping braces)
+
 
                 // Refresh current tab
                 if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
@@ -2722,8 +2719,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                         );
                     }
                 },
-                Err(async_channel::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-                Err(async_channel::TryRecvError::Closed) => return glib::ControlFlow::Break,
+           Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+           Err(std::sync::mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+
             }
         });
     }
@@ -3252,7 +3250,8 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         properties_btn.connect_clicked(move |_| {
             popover.popdown();
             if let Some(item) = single_item_clone {
-                crate::ui::properties::show(&window, &item.get_path());
+                crate::ui::properties::show(&window, &item);
+
             }
         });
     }
@@ -3281,7 +3280,7 @@ fn typeahead_select(
 }
 
 fn filesystem_free_string(path: &PathBuf) -> String {
-    if let Ok(info) = metadata::fs_info(path) {
+    if let Ok(info) = std::fs::symlink_metadata(path) {
         metadata::format_size(info.available)
     } else {
         String::from("Unknown")
