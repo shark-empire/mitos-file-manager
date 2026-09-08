@@ -16,12 +16,12 @@ mod util;
 use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
+use gtk::prelude::WidgetExt;
 use gtk::prelude::*;
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Entry, Label, ListBox,
     Notebook, Orientation, ScrolledWindow, SearchEntry, SelectionMode,
 };
-use gtk::prelude::WidgetExt; 
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -1357,9 +1357,8 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         glib::MainContext::default().spawn_local(async move {
             while let Ok(shared_config) = config_rx.recv().await {
                 // Apply theme if changed
-            let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
-            // ... (remove the wrapping braces)
-
+                let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
+                // ... (remove the wrapping braces)
 
                 // Refresh current tab
                 if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
@@ -2719,9 +2718,10 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                         );
                     }
                 },
-           Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-           Err(std::sync::mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
-
+                Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return glib::ControlFlow::Break
+                }
             }
         });
     }
@@ -3251,7 +3251,6 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
             popover.popdown();
             if let Some(item) = single_item_clone {
                 crate::ui::properties::show(&window, &item);
-
             }
         });
     }
