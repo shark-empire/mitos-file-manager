@@ -17,3 +17,4 @@ pub mod theme;
 pub mod trash_view;
 pub mod tree_view;
 pub mod window;
+pub mod file_list;
