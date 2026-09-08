@@ -1,14 +1,16 @@
 use gtk::prelude::*;
-use mitos_utils::common::permissions::format_permissions;
+use crate::ui::item_object::ItemObject;
 
-fn render_file_row(file: &FileEntry) -> gtk::Widget {
+// Use ItemObject which already holds the formatted permission string 
+// populated from your filesystem metadata module.
+pub fn render_file_row(file: &ItemObject) -> gtk::Widget {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
 
-    // Reuse the exact formatting logic from `mitos-ls`
-    let perms = format_permissions(file.mode);
+    // Access the pre-formatted permissions directly from the object properties
+    let perms = file.permissions(); 
 
     row.append(&gtk::Label::new(Some(&perms)));
-    row.append(&gtk::Label::new(Some(&file.name)));
+    row.append(&gtk::Label::new(Some(&file.name())));
 
     row.upcast()
 }
