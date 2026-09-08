@@ -976,7 +976,7 @@ fn add_tab(
         right_click.connect_pressed(move |_gesture, _n_press, x, y| {
             let items = grid_view::selected_items(&selection, &store);
             if !items.is_empty() {
-              let menu =  show_context_menu(
+                let menu = show_context_menu(
                     &window,
                     &notebook,
                     &ctx,
