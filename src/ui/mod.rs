@@ -2,6 +2,7 @@
 pub mod accessibility;
 pub mod batch_rename;
 pub mod dialogs;
+pub mod file_list;
 pub mod grid_view;
 pub mod item_object;
 pub mod list_view;
@@ -17,4 +18,3 @@ pub mod theme;
 pub mod trash_view;
 pub mod tree_view;
 pub mod window;
-pub mod file_list;
