@@ -889,14 +889,17 @@ fn add_tab(
         let right_click = gtk::GestureClick::new();
         right_click.set_button(3);
 
-        right_click.connect_pressed(move |_gesture, _n_press, x, y| {
+        // 1. Clone the grid for the closure (cheap reference count increment)
+       let grid_for_closure = grid.clone();
+
+       right_click.connect_pressed(move |_gesture, _n_press, x, y| {
             let items = grid_view::selected_items(&selection, &store);
             if !items.is_empty() {
                 show_context_menu(
                     &window,
                     &notebook,
                     &ctx,
-                    &grid,
+                    &grid_for_closure,
                     &store,
                     &selection,
                     &location_entry,
