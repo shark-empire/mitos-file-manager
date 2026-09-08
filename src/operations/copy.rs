@@ -1,7 +1,7 @@
+use mitos_utils::applets::cp;
 use std::fs;
 use std::io;
 use std::path::Path;
-use mitos_utils::applets::cp;
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink as symlink_unix;
@@ -28,15 +28,18 @@ pub fn copy_path(source: &Path, destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
-
 pub fn copy_file(source: &Path, dest: &Path) -> Result<(), String> {
     // This calls the exact same logic as running "mitos-cp" in the terminal
     // args: ["cp", "-p", source_str, dest_str] (preserve timestamps)
-    let args = vec!["cp".to_string(), "-p".to_string(), source.to_string_lossy().to_string(), dest.to_string_lossy().to_string()];
-    
+    let args = vec![
+        "cp".to_string(),
+        "-p".to_string(),
+        source.to_string_lossy().to_string(),
+        dest.to_string_lossy().to_string(),
+    ];
+
     cp::run(args).map_err(|e| e.to_string())
 }
-
 
 fn copy_dir_all(source: &Path, destination: &Path) -> io::Result<()> {
     fs::create_dir_all(destination)?;
