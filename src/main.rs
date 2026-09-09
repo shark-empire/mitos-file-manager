@@ -2938,6 +2938,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         let popover = popover.clone();
         let window = window.clone();
         let single_item = single_item.clone();
+        let open_with_btn_for_closure = open_with_btn.clone();
 
         open_with_btn.connect_clicked(move |_| {
             popover.popdown();
@@ -2960,7 +2961,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
             let sub_popover = gtk::Popover::new();
             sub_popover.set_has_arrow(true);
             sub_popover.set_autohide(true);
-            sub_popover.set_parent(&open_with_btn);
+            sub_popover.set_parent(&open_with_btn_for_closure);
 
             let sub_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
             sub_box.set_margin_top(4);
@@ -3002,8 +3003,9 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
             let mime_clone = mime.clone();
             let window_clone = window.clone();
 
+            let sub_popover_for_closure = sub_popover.clone();
             default_btn.connect_clicked(move |_| {
-                sub_popover.popdown();
+                 sub_popover_for_closure.popdown();
                 show_default_app_picker(&window_clone, display_apps_clone.clone(), &mime_clone);
             });
 
@@ -3238,6 +3240,13 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
         let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
+let paths_for_closure = paths.clone(); // Clone before closure
+
+trash_btn.connect_clicked(move |_| {
+    //
+    paths_for_closure.clone(), // Clone inside closure if ownership is needed
+});
+
 
         trash_btn.connect_clicked(move |_| {
             popover.popdown();
@@ -3246,7 +3255,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
                 &notebook,
                 &ctx,
                 &location_entry,
-                &search_entry,
+                &searchi_entry,
                 &hidden_toggle,
                 &sidebar_list,
                 &watcher_manager,
