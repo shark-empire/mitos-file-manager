@@ -1845,7 +1845,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
         let right_click = gtk::GestureClick::new();
         let sidebar_list_for_closure = sidebar_list.clone();
-        sidebar_list.connect_row_activated(move |_, row| {
+        sidebar_list.clone().connect_row_activated(move |_, row| { 
             let _ = &sidebar_list_for_closure;
             if let Some(path) = sidebar::resolve_click(row) {
                 if path.is_file() {
@@ -1886,7 +1886,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let sidebar_list_for_closure = sidebar_list.clone();
         right_click.connect_pressed(move |_gesture, _n_press, x, y| {
             let _ = &sidebar_list_for_closure;
-            if let Some(row) = sidebar_list.row_at_y(y as i32) {
+            if let Some(row) = sidebar_list_for_closure.row_at_y(y as i32) {
                 let name = row.widget_name();
                 if let Some(path_str) = name.strip_prefix("bm:") {
                     let path = PathBuf::from(path_str);
@@ -1933,7 +1933,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let tree_state = tree_state.clone();
 
         let sidebar_list_for_closure = sidebar_list.clone();
-        tree_list.connect_row_activated(move |_, row| {
+        tree_list.clone().connect_row_activated(move |_, row| {
             let _ = &sidebar_list_for_closure;
             let path_str = row.widget_name();
             if !path_str.is_empty() {
@@ -2146,7 +2146,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let watcher_manager = watcher_manager.clone();
 
         let sidebar_list_for_closure = sidebar_list.clone();
-        hidden_toggle.connect_toggled(move |toggle| {
+        hidden_toggle.clone().connect_toggled(move |toggle| { 
             let is_active = toggle.is_active();
             config::settings::set_show_hidden(is_active);
 
@@ -3259,7 +3259,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
                 &hidden_toggle,
                 &sidebar_list,
                 &watcher_manager,
-                paths,
+                paths_to_trash,
             );
         });
     }
