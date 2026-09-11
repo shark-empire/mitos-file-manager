@@ -1862,7 +1862,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                         &location_entry,
                         &search_entry,
                         &hidden_toggle,
-                        &sidebar_list,
+                        &sidebar_list_for_closure,
                     );
                     update_watcher(&notebook, &watcher_manager);
                 }
@@ -1950,7 +1950,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                         &location_entry,
                         &search_entry,
                         &hidden_toggle,
-                        &sidebar_list,
+                        &sidebar_list_for_closure,
                     );
                     update_watcher(&notebook, &watcher_manager);
                 }
