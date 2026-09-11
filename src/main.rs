@@ -1894,7 +1894,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                         &window,
                         &notebook,
                         &ctx,
-                        &sidebar_list_closure,
+                        &sidebar_list_for_closure,
                         &location_entry,
                         &search_entry,
                         &hidden_toggle,
@@ -1956,7 +1956,10 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                 }
             }
         });
+        let right_click = gtk::GestureClick::new();
+        right_click.set_button(3); // Standard secondary/right-click binding
         sidebar_list.add_controller(right_click);
+
     }
 
     // New Window Button
@@ -2165,7 +2168,10 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                 }
             }
         });
+        let right_click = gtk::GestureClick::new();
+        right_click.set_button(3); // Standard secondary/right-click binding
         sidebar_list.add_controller(right_click);
+
     }
 
     {
@@ -2911,11 +2917,11 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         let hidden_toggle = hidden_toggle.clone();
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
+        let single_item_tab = single_item.clone();
 
         open_tab_btn.connect_clicked(move |_| {
             popover.popdown();
-            let Some(item) = single_item.clone() else {
-                return;
+            let Some(item) = single_item_tab.clone() else { return };
             };
             if item.is_dir() {
                 add_tab(
@@ -3241,13 +3247,11 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
         let paths_for_closure = paths.clone(); // Clone before closure
 
-        trash_btn.connect_clicked(move |_| {
-            //
-            let paths = paths_for_closure.clone(); // Clone inside closure if ownership is needed
-        });
+
 
         trash_btn.connect_clicked(move |_| {
             popover.popdown();
+            let paths_to_trash = paths.clone();
             start_trash_job_ui(
                 &window,
                 &notebook,
@@ -3269,7 +3273,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
 
         properties_btn.connect_clicked(move |_| {
             popover.popdown();
-            if let Some(item) = single_item_clone {
+            if let Some(item) = &single_item_clone {
                 crate::ui::properties::show(&window, &item);
             }
         });
