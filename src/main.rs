@@ -1959,7 +1959,6 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let right_click = gtk::GestureClick::new();
         right_click.set_button(3); // Standard secondary/right-click binding
         sidebar_list.add_controller(right_click);
-
     }
 
     // New Window Button
@@ -2171,7 +2170,6 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let right_click = gtk::GestureClick::new();
         right_click.set_button(3); // Standard secondary/right-click binding
         sidebar_list.add_controller(right_click);
-
     }
 
     {
@@ -2921,8 +2919,10 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
 
         open_tab_btn.connect_clicked(move |_| {
             popover.popdown();
-            let Some(item) = single_item_tab.clone() else { return };
-            
+            let Some(item) = single_item_tab.clone() else {
+                return;
+            };
+
             if item.is_dir() {
                 add_tab(
                     &notebook,
@@ -3246,8 +3246,6 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         let watcher_manager = watcher_manager.clone();
         let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
         let paths_for_closure = paths.clone(); // Clone before closure
-
-
 
         trash_btn.connect_clicked(move |_| {
             popover.popdown();
