@@ -1843,6 +1843,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
 
+        let right_click = gtk::GestureClick::new();
         let sidebar_list_for_closure = sidebar_list.clone();
         sidebar_list.connect_row_activated(move |_, row| {
             let _ = &sidebar_list_for_closure; 
@@ -1893,7 +1894,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                         &window,
                         &notebook,
                         &ctx,
-                        &sidebar_list-closure,
+                        &sidebar_list_closure,
                         &location_entry,
                         &search_entry,
                         &hidden_toggle,
@@ -1955,7 +1956,6 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                 }
             }
         });
-        sidebar_list again
 sidebar_list.add_controller(right_click);
     }
 
@@ -2165,7 +2165,6 @@ sidebar_list.add_controller(right_click);
                 }
             }
         });
-        sidebar_list again
 sidebar_list.add_controller(right_click);
     }
 
@@ -3244,7 +3243,7 @@ let paths_for_closure = paths.clone(); // Clone before closure
 
 trash_btn.connect_clicked(move |_| {
     //
-    paths_for_closure.clone(), // Clone inside closure if ownership is needed
+    let paths = paths_for_closure.clone(); // Clone inside closure if ownership is needed
 });
 
 
@@ -3255,7 +3254,7 @@ trash_btn.connect_clicked(move |_| {
                 &notebook,
                 &ctx,
                 &location_entry,
-                &searchi_entry,
+                &search_entry,
                 &hidden_toggle,
                 &sidebar_list,
                 &watcher_manager,
