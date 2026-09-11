@@ -1846,7 +1846,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let right_click = gtk::GestureClick::new();
         let sidebar_list_for_closure = sidebar_list.clone();
         sidebar_list.connect_row_activated(move |_, row| {
-            let _ = &sidebar_list_for_closure; 
+            let _ = &sidebar_list_for_closure;
             if let Some(path) = sidebar::resolve_click(row) {
                 if path.is_file() {
                     open_file_default(&path);
@@ -1885,7 +1885,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
         let sidebar_list_for_closure = sidebar_list.clone();
         right_click.connect_pressed(move |_gesture, _n_press, x, y| {
-             let _ = &sidebar_list_for_closure; 
+            let _ = &sidebar_list_for_closure;
             if let Some(row) = sidebar_list.row_at_y(y as i32) {
                 let name = row.widget_name();
                 if let Some(path_str) = name.strip_prefix("bm:") {
@@ -1934,7 +1934,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
         let sidebar_list_for_closure = sidebar_list.clone();
         tree_list.connect_row_activated(move |_, row| {
-               let _ = &sidebar_list_for_closure; 
+            let _ = &sidebar_list_for_closure;
             let path_str = row.widget_name();
             if !path_str.is_empty() {
                 let path = PathBuf::from(path_str.as_str());
@@ -1956,7 +1956,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                 }
             }
         });
-sidebar_list.add_controller(right_click);
+        sidebar_list.add_controller(right_click);
     }
 
     // New Window Button
@@ -2149,7 +2149,7 @@ sidebar_list.add_controller(right_click);
             config::settings::set_show_hidden(is_active);
 
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                 let _ = &sidebar_list_for_closure; 
+                let _ = &sidebar_list_for_closure;
                 if tab_state.borrow().show_hidden != is_active {
                     tab_state.borrow_mut().show_hidden = is_active;
                     refresh_tab(
@@ -2165,7 +2165,7 @@ sidebar_list.add_controller(right_click);
                 }
             }
         });
-sidebar_list.add_controller(right_click);
+        sidebar_list.add_controller(right_click);
     }
 
     {
@@ -3004,7 +3004,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
 
             let sub_popover_for_closure = sub_popover.clone();
             default_btn.connect_clicked(move |_| {
-                 sub_popover_for_closure.popdown();
+                sub_popover_for_closure.popdown();
                 show_default_app_picker(&window_clone, display_apps_clone.clone(), &mime_clone);
             });
 
@@ -3239,13 +3239,12 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
         let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
-let paths_for_closure = paths.clone(); // Clone before closure
+        let paths_for_closure = paths.clone(); // Clone before closure
 
-trash_btn.connect_clicked(move |_| {
-    //
-    let paths = paths_for_closure.clone(); // Clone inside closure if ownership is needed
-});
-
+        trash_btn.connect_clicked(move |_| {
+            //
+            let paths = paths_for_closure.clone(); // Clone inside closure if ownership is needed
+        });
 
         trash_btn.connect_clicked(move |_| {
             popover.popdown();
