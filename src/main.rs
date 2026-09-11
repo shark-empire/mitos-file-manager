@@ -1845,7 +1845,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
         let right_click = gtk::GestureClick::new();
         let sidebar_list_for_closure = sidebar_list.clone();
-        sidebar_list.clone().connect_row_activated(move |_, row| { 
+        sidebar_list.clone().connect_row_activated(move |_, row| {
             let _ = &sidebar_list_for_closure;
             if let Some(path) = sidebar::resolve_click(row) {
                 if path.is_file() {
@@ -2146,7 +2146,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let watcher_manager = watcher_manager.clone();
 
         let sidebar_list_for_closure = sidebar_list.clone();
-        hidden_toggle.clone().connect_toggled(move |toggle| { 
+        hidden_toggle.clone().connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
             config::settings::set_show_hidden(is_active);
 
