@@ -66,6 +66,20 @@ fn run_dbus_service(
                 Err(e) => Err(zbus::fdo::Error::Failed(format!("Response error: {}", e))),
             }
         }
+
+        fn open_desktop_settings(&self) -> zbus::fdo::Result<()> {
+            let (response_tx, response_rx) = mpsc::channel();
+
+            self.request_tx
+                .send(DesktopRequest::OpenDesktopSettings { response_tx })
+                .map_err(|e| zbus::fdo::Error::Failed(format!("Channel error: {}", e)))?;
+
+            match response_rx.recv() {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(msg)) => Err(zbus::fdo::Error::Failed(msg)),
+                Err(e) => Err(zbus::fdo::Error::Failed(format!("Response error: {}", e))),
+            }
+        }
     }
 
     let connection = Connection::session()?;
