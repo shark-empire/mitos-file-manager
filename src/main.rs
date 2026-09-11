@@ -2922,7 +2922,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         open_tab_btn.connect_clicked(move |_| {
             popover.popdown();
             let Some(item) = single_item_tab.clone() else { return };
-            };
+            
             if item.is_dir() {
                 add_tab(
                     &notebook,
