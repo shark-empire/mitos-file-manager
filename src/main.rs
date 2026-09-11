@@ -1,7 +1,6 @@
-#![allow(dead_code)]
-
 mod app;
 mod config;
+mod desktop;
 mod error;
 mod filesystem;
 mod mime;
@@ -29,7 +28,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use app::context::AppContext;
@@ -901,8 +899,6 @@ fn add_tab(
                     &notebook,
                     &ctx,
                     &grid_for_closure,
-                    &store,
-                    &selection,
                     &location_entry,
                     &search_entry,
                     &hidden_toggle,
@@ -977,13 +973,11 @@ fn add_tab(
         right_click.connect_pressed(move |_gesture, _n_press, x, y| {
             let items = grid_view::selected_items(&selection, &store);
             if !items.is_empty() {
-                let menu = show_context_menu(
+                show_context_menu(
                     &window,
                     &notebook,
                     &ctx,
                     &list_view_for_closure,
-                    &store,
-                    &selection,
                     &location_entry,
                     &search_entry,
                     &hidden_toggle,
@@ -1131,6 +1125,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     ui::theme::apply_theme(&WidgetExt::display(&window), theme_mode);
 
     let portal_rx = portal::service::start();
+    let desktop_rx = desktop::service::start();
 
     // Setup Inotify Channel
     let (sender, receiver) = async_channel::unbounded();
@@ -1346,6 +1341,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
     // Poll for config changes
     {
+        let window = window.clone();
         let notebook = notebook.clone();
         let ctx = ctx.clone();
         let location_entry = location_entry.clone();
@@ -1358,7 +1354,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
             while let Ok(shared_config) = config_rx.recv().await {
                 // Apply theme if changed
                 let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
-                // ... (remove the wrapping braces)
+                ui::theme::apply_theme(&WidgetExt::display(&window), theme_mode);
 
                 // Refresh current tab
                 if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
@@ -1579,7 +1575,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                     }
                     return glib::Propagation::Stop;
                 }
-                k if key == gtk::gdk::Key::Delete => {
+                _ if key == gtk::gdk::Key::Delete => {
                     if let Some((_, _, store, selection)) = &active {
                         let selected = grid_view::selected_items(selection, store);
                         if !selected.is_empty() {
@@ -1600,8 +1596,8 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                     }
                     return glib::Propagation::Stop;
                 }
-                k if key == gtk::gdk::Key::F2 => {
-                    if let Some((tab_state, _, store, selection)) = &active {
+                _ if key == gtk::gdk::Key::F2 => {
+                    if let Some((_, _, store, selection)) = &active {
                         let selected = grid_view::selected_items(selection, store);
                         if selected.len() == 1 {
                             let item = selected[0].clone();
@@ -1654,7 +1650,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                     }
                     return glib::Propagation::Stop;
                 }
-                k if key == gtk::gdk::Key::F5 => {
+                _ if key == gtk::gdk::Key::F5 => {
                     if let Some((tab_state, _, store, _)) = &active {
                         refresh_tab(
                             tab_state,
@@ -1758,7 +1754,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
 
                     glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-                        let rx = rx.lock().unwrap();
+                        let rx = rx.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
                         match rx.try_recv() {
                             Ok(results) => {
@@ -2742,6 +2738,37 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         });
     }
 
+    // Desktop Receiver
+    {
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || loop {
+            match desktop_rx.try_recv() {
+                Ok(request) => match request {
+                    desktop::service::DesktopRequest::GetWallpaper { response_tx } => {
+                        let wallpaper = config::shared::SharedConfig::load().wallpaper;
+                        let _ = response_tx.send(wallpaper);
+                    }
+                    desktop::service::DesktopRequest::SetWallpaper { path, response_tx } => {
+                        let mut shared_config = config::shared::SharedConfig::load();
+                        shared_config.wallpaper = path;
+                        let result = shared_config.save().map_err(|err| err.to_string());
+                        let _ = response_tx.send(result);
+                    }
+                    desktop::service::DesktopRequest::OpenDesktopSettings { response_tx } => {
+                        let result = Command::new("mitos-settings")
+                            .spawn()
+                            .map(|_| ())
+                            .map_err(|err| err.to_string());
+                        let _ = response_tx.send(result);
+                    }
+                },
+                Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return glib::ControlFlow::Break
+                }
+            }
+        });
+    }
+
     window.present();
 }
 
@@ -2750,8 +2777,6 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
     notebook: &Notebook,
     ctx: &Rc<RefCell<AppContext>>,
     parent: &W,
-    store: &gio::ListStore,
-    selection: &gtk::MultiSelection,
     location_entry: &Entry,
     search_entry: &SearchEntry,
     hidden_toggle: &CheckButton,
@@ -3245,7 +3270,6 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
         let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
-        let paths_for_closure = paths.clone(); // Clone before closure
 
         trash_btn.connect_clicked(move |_| {
             popover.popdown();
@@ -3366,12 +3390,80 @@ fn show_sidebar_context_menu(
 
 fn show_default_app_picker(
     window: &ApplicationWindow,
-    _display_apps: Vec<(String, gio::AppInfo)>,
+    display_apps: Vec<(String, gio::AppInfo)>,
     mime: &str,
 ) {
-    // Basic dialog stub to set default MIME type action
-    crate::ui::dialogs::show_error(
-        window,
-        &format!("Setting default app for {} is not yet implemented.", mime),
-    );
+    if display_apps.is_empty() {
+        crate::ui::dialogs::show_error(
+            window,
+            &format!("No applications are available for {}.", mime),
+        );
+        return;
+    }
+
+    let dialog = gtk::Dialog::builder()
+        .title("Set Default Application")
+        .transient_for(window)
+        .modal(true)
+        .build();
+
+    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    dialog.add_button("Set as Default", gtk::ResponseType::Accept);
+
+    let content = dialog.content_area();
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.set_spacing(6);
+
+    let list = ListBox::new();
+    list.set_selection_mode(SelectionMode::Single);
+
+    for (name, _) in &display_apps {
+        let row = gtk::ListBoxRow::new();
+        let label = Label::new(Some(name));
+        label.set_halign(gtk::Align::Start);
+        label.set_margin_top(4);
+        label.set_margin_bottom(4);
+        label.set_margin_start(8);
+        label.set_margin_end(8);
+        row.set_child(Some(&label));
+        list.append(&row);
+    }
+
+    if let Some(first_row) = list.row_at_index(0) {
+        list.select_row(Some(&first_row));
+    }
+
+    let scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_height(200)
+        .build();
+    scrolled.set_child(Some(&list));
+
+    content.append(&scrolled);
+
+    let mime = mime.to_string();
+    let window = window.clone();
+
+    dialog.connect_response(move |dialog, response| {
+        if response == gtk::ResponseType::Accept {
+            if let Some(row) = list.selected_row() {
+                let index = row.index();
+                if index >= 0 {
+                    if let Some((_, app_info)) = display_apps.get(index as usize) {
+                        if let Err(err) =
+                            crate::mime::applications::set_default_app(app_info, &mime)
+                        {
+                            crate::ui::dialogs::show_error(&window, &format!("Failed: {err}"));
+                        }
+                    }
+                }
+            }
+        }
+        dialog.close();
+    });
+
+    dialog.present();
 }
