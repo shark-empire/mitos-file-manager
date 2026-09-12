@@ -1,4 +1,3 @@
-use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow};
 
 pub fn create_window(app: &Application, title: &str) -> ApplicationWindow {
