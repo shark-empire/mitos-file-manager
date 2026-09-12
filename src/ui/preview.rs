@@ -35,7 +35,7 @@ pub fn build() -> (ScrolledWindow, GtkBox) {
 
     let image = Picture::new();
     image.set_can_shrink(true);
-    image.set_keep_aspect_ratio(true);
+    image.set_content_fit(gtk::ContentFit::Contain);
     image.set_height_request(200);
     stack.add_named(&image, Some("image"));
 
