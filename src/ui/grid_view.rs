@@ -39,7 +39,7 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
 
         let picture = gtk::Picture::new();
         picture.set_can_shrink(true);
-        picture.set_keep_aspect_ratio(true);
+        picture.set_content_fit(gtk::ContentFit::Contain);
         picture.set_width_request(72);
         picture.set_height_request(72);
         picture.set_halign(gtk::Align::Center);
@@ -72,12 +72,19 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
             .downcast_ref::<gtk::ListItem>()
             .expect("Needs to be ListItem");
 
-        let item_obj = item.item().and_downcast::<ItemObject>().unwrap();
+        let Some(item_obj) = item.item().and_downcast::<ItemObject>() else {
+            return;
+        };
 
-        let stack: gtk::Stack = get_obj_data(item, "stack").unwrap();
-        let icon: gtk::Image = get_obj_data(item, "icon").unwrap();
-        let picture: gtk::Picture = get_obj_data(item, "picture").unwrap();
-        let label: gtk::Label = get_obj_data(item, "label").unwrap();
+        let stack: Option<gtk::Stack> = get_obj_data(item, "stack");
+        let icon: Option<gtk::Image> = get_obj_data(item, "icon");
+        let picture: Option<gtk::Picture> = get_obj_data(item, "picture");
+        let label: Option<gtk::Label> = get_obj_data(item, "label");
+
+        let (Some(stack), Some(icon), Some(picture), Some(label)) = (stack, icon, picture, label)
+        else {
+            return;
+        };
 
         icon.set_icon_name(Some(&item_obj.icon_name()));
         label.set_label(&item_obj.name());
