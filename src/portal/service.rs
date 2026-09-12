@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::mpsc;
 
 /// Requests sent from the D-Bus portal thread to the GTK main thread.
