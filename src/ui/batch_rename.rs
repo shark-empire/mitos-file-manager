@@ -5,7 +5,7 @@ use gtk::{
     ApplicationWindow, Box as GtkBox, Button, Entry, Label, ListBox, ListBoxRow, Orientation,
     ScrolledWindow, SelectionMode, SpinButton,
 };
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 pub fn show<F>(parent: &ApplicationWindow, items: Vec<(String, PathBuf)>, on_apply: F)
