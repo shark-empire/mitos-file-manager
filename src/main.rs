@@ -355,21 +355,18 @@ fn prepare_paste_tasks(
 ) -> Vec<operations::jobs::PasteTask> {
     use operations::jobs::{ConflictAction, ConflictPolicy, PasteTask};
 
-    let mut has_conflict = false;
+    let conflict_count = sources
+        .iter()
+        .filter(|source| {
+            source
+                .file_name()
+                .map(|name| destination.join(name).exists())
+                .unwrap_or(false)
+        })
+        .count();
 
-    for source in &sources {
-        let Some(file_name) = source.file_name() else {
-            continue;
-        };
-
-        if destination.join(file_name).exists() {
-            has_conflict = true;
-            break;
-        }
-    }
-
-    let policy = if has_conflict {
-        dialogs::choose_conflict_policy(window)
+    let policy = if conflict_count > 0 {
+        dialogs::choose_conflict_policy(window, conflict_count)
     } else {
         Some(ConflictPolicy::KeepBoth)
     };
@@ -1116,6 +1113,13 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
     // After loading settings
     config::settings::load();
+    // Seed the session view-mode toggle from the persisted default so a
+    // fresh window opens in whichever of grid/list the user last chose in
+    // Settings, instead of always starting in grid view.
+    VIEW_MODE_LIST.store(
+        config::settings::default_view() == "list",
+        Ordering::Relaxed,
+    );
 
     // Start config watcher
     let (config_tx, config_rx) = async_channel::unbounded();
@@ -1171,6 +1175,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     let copy_btn = Button::with_label("Copy");
     let move_btn = Button::with_label("Move");
     let list_toggle = CheckButton::with_label("List");
+    list_toggle.set_active(VIEW_MODE_LIST.load(Ordering::Relaxed));
     let paste_btn = Button::with_label("Paste");
     let trash_btn = Button::with_label("Trash");
     let open_trash_btn = Button::with_label("Open Trash");
@@ -1843,6 +1848,38 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         let sidebar_list_for_closure = sidebar_list.clone();
         sidebar_list.clone().connect_row_activated(move |_, row| {
             let _ = &sidebar_list_for_closure;
+
+            if row.widget_name() == "action:connect-to-server" {
+                if let Some(window) =
+                    get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window")
+                {
+                    let notebook = notebook.clone();
+                    let ctx = ctx.clone();
+                    let location_entry = location_entry.clone();
+                    let search_entry = search_entry.clone();
+                    let hidden_toggle = hidden_toggle.clone();
+                    let sidebar_list_for_connect = sidebar_list_for_closure.clone();
+                    let watcher_manager = watcher_manager.clone();
+
+                    dialogs::show_connect_to_server(&window, move |path| {
+                        if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                            navigate_to(&tab_state, path);
+                            refresh_tab(
+                                &tab_state,
+                                &store,
+                                &ctx,
+                                &location_entry,
+                                &search_entry,
+                                &hidden_toggle,
+                                &sidebar_list_for_connect,
+                            );
+                            update_watcher(&notebook, &watcher_manager);
+                        }
+                    });
+                }
+                return;
+            }
+
             if let Some(path) = sidebar::resolve_click(row) {
                 if path.is_file() {
                     open_file_default(&path);
@@ -3325,11 +3362,11 @@ fn typeahead_select(
 }
 
 fn filesystem_free_string(path: &PathBuf) -> String {
-    if let Ok(info) = std::fs::symlink_metadata(path) {
-        metadata::format_size(info.len())
-    } else {
-        String::from("Unknown")
-    }
+    // Was reporting `symlink_metadata(path).len()` -- the size of the
+    // directory entry itself (typically a handful of KB), not free disk
+    // space. `metadata::free_space_string` uses `statvfs(3)` to report
+    // what's actually available on the partition that contains `path`.
+    metadata::free_space_string(path)
 }
 
 fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
