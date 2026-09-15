@@ -190,6 +190,32 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
             row.set_widget_name(&format!("place:{}", path.display()));
             list.append(&row);
         }
+    } else {
+        add_header(list, "Devices");
+    }
+
+    // --- "Connect to Server..." action row, always available so the user
+    // can mount a new smb:// / sftp:// / ftp:// location. It's not a place
+    // to navigate to, so it gets its own widget-name the click handler
+    // checks for before falling through to `resolve_click`.
+    {
+        let row = ListBoxRow::new();
+        let row_box = GtkBox::new(Orientation::Horizontal, 6);
+        row_box.set_margin_top(4);
+        row_box.set_margin_bottom(4);
+        row_box.set_margin_start(6);
+        row_box.set_margin_end(6);
+
+        let icon = Image::from_icon_name("network-server-symbolic");
+        let label = Label::new(Some("Connect to Server…"));
+        label.set_hexpand(true);
+        label.set_halign(gtk::Align::Start);
+
+        row_box.append(&icon);
+        row_box.append(&label);
+        row.set_child(Some(&row_box));
+        row.set_widget_name("action:connect-to-server");
+        list.append(&row);
     }
 }
 

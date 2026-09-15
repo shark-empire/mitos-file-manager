@@ -85,6 +85,20 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     grid.attach(&theme_label, 0, 4, 1, 1);
     grid.attach(&theme_dropdown, 1, 4, 1, 1);
 
+    // Default view (grid vs list)
+    let view_label = Label::new(Some("Default view"));
+    view_label.set_halign(gtk::Align::Start);
+    view_label.set_hexpand(true);
+
+    let view_dropdown = gtk::DropDown::from_strings(&["Grid", "List"]);
+
+    let current_view = if current.default_view == "list" { 1 } else { 0 };
+    view_dropdown.set_selected(current_view);
+    view_dropdown.set_halign(gtk::Align::End);
+
+    grid.attach(&view_label, 0, 5, 1, 1);
+    grid.attach(&view_dropdown, 1, 5, 1, 1);
+
     // Buttons
     let button_box = GtkBox::new(Orientation::Horizontal, 8);
 
@@ -120,12 +134,19 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
                 "light"
             };
 
+            let view = if view_dropdown.selected() == 1 {
+                "list"
+            } else {
+                "grid"
+            };
+
             settings::apply_and_save(
                 hidden_switch.is_active(),
                 thumbnails_switch.is_active(),
                 max_spin.value() as u64,
                 confirm_switch.is_active(),
                 theme,
+                view,
             );
 
             apply.as_ref()();

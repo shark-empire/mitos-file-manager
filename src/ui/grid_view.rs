@@ -1,4 +1,5 @@
 use gtk::gio;
+use gtk::glib;
 use gtk::prelude::*;
 
 use crate::filesystem::directory::Item;
@@ -10,6 +11,16 @@ pub fn create_model() -> (gio::ListStore, gtk::MultiSelection) {
     let selection = gtk::MultiSelection::new(Some(store.clone()));
 
     (store, selection)
+}
+
+fn apply_thumbnail(stack: &gtk::Stack, icon: &gtk::Image, picture: &gtk::Picture, path: &str) {
+    if path.is_empty() {
+        picture.set_filename(None::<&str>);
+        stack.set_visible_child(icon);
+    } else {
+        picture.set_filename(Some(path));
+        stack.set_visible_child(picture);
+    }
 }
 
 pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
@@ -89,14 +100,65 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
         icon.set_icon_name(Some(&item_obj.icon_name()));
         label.set_label(&item_obj.name());
 
-        let thumbnail_path = item_obj.thumbnail_path();
+        apply_thumbnail(&stack, &icon, &picture, &item_obj.thumbnail_path());
 
-        if thumbnail_path.is_empty() {
-            picture.set_filename(None::<&str>);
-            stack.set_visible_child(&icon);
-        } else {
-            picture.set_filename(Some(thumbnail_path.as_str()));
-            stack.set_visible_child(&picture);
+        // Video thumbnails aren't ready at bind time (see below), so stay
+        // in sync if `thumbnail-path` changes later. `GridView` recycles
+        // `ListItem`s as you scroll, so this has to be disconnected in
+        // `connect_unbind` below -- otherwise a stale handler could later
+        // fire and repaint whatever row this item got recycled into.
+        let stack_for_notify = stack.clone();
+        let icon_for_notify = icon.clone();
+        let picture_for_notify = picture.clone();
+
+        let handler_id = item_obj.connect_notify_local(Some("thumbnail-path"), move |obj, _| {
+            apply_thumbnail(
+                &stack_for_notify,
+                &icon_for_notify,
+                &picture_for_notify,
+                &obj.thumbnail_path(),
+            );
+        });
+
+        set_obj_data(item, "thumbnail-signal-handler", handler_id);
+
+        // Images either already have a cached thumbnail or can be shown
+        // directly (both handled synchronously in `thumbnail_path_for`),
+        // but videos need a frame pulled out with `ffmpeg`, which is too
+        // slow to do while populating the folder. Kick that off now and
+        // let the `notify` handler above pick up the result -- via a weak
+        // ref, so a video that's scrolled away/navigated away from before
+        // `ffmpeg` finishes doesn't keep the row's `ItemObject` alive.
+        if item_obj.thumbnail_path().is_empty() && item_obj.mime_type().starts_with("video/") {
+            let rx = crate::mime::thumbnail::spawn_video_thumbnail_job(
+                item_obj.get_path(),
+                item_obj.mime_type(),
+            );
+            let item_obj_weak = item_obj.downgrade();
+
+            glib::MainContext::default().spawn_local(async move {
+                if let Ok(Some(cache_path)) = rx.recv().await {
+                    if let Some(item_obj) = item_obj_weak.upgrade() {
+                        item_obj.set_thumbnail_path(cache_path);
+                    }
+                }
+            });
+        }
+    });
+
+    factory.connect_unbind(move |_, item| {
+        let item = item
+            .downcast_ref::<gtk::ListItem>()
+            .expect("Needs to be ListItem");
+
+        let Some(item_obj) = item.item().and_downcast::<ItemObject>() else {
+            return;
+        };
+
+        if let Some(handler_id) =
+            get_obj_data::<_, glib::SignalHandlerId>(item, "thumbnail-signal-handler")
+        {
+            item_obj.disconnect(handler_id);
         }
     });
 
