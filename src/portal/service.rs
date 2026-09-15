@@ -110,11 +110,21 @@ fn run_dbus_service(
 
     connection.request_name("org.mitos.FilePicker")?;
 
-    let portal = FilePickerPortal { request_tx };
+    let portal = FilePickerPortal {
+        request_tx: request_tx.clone(),
+    };
 
     connection
         .object_server()
         .at("/org/mitos/FilePicker", portal)?;
+
+    // Also expose the standard XDG Desktop Portal FileChooser interface,
+    // reusing the same request channel/dialogs as the custom interface
+    // above -- see xdg_portal.rs for why it needs its own object path per
+    // call instead of just another method here.
+    if let Err(err) = super::xdg_portal::register(&connection, request_tx) {
+        eprintln!("XDG FileChooser portal registration error: {err}");
+    }
 
     // Keep the service alive
     loop {
