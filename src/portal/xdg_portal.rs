@@ -41,6 +41,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
+use gtk::gio::prelude::FileExt; 
+// Or, use the wildcard: use gtk::gio::prelude::*;
+
 
 use zbus::blocking::Connection;
 use zbus::interface;
@@ -245,7 +248,7 @@ fn option_bool(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
         return false;
     };
 
-    Value::from(value.clone())
+      (*v).clone()
         .downcast::<bool>()
         .unwrap_or(false)
 }
