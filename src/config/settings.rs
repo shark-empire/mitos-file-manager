@@ -10,6 +10,10 @@ static THUMBNAILS_ENABLED: AtomicBool = AtomicBool::new(true);
 static THUMBNAIL_MAX_MB: AtomicU64 = AtomicU64::new(50);
 static CONFIRM_TRASH: AtomicBool = AtomicBool::new(true);
 static THEME_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// Same true/false-as-two-options representation as THEME_MODE above --
+// true means "list", false means "grid" -- kept in sync with the
+// session-only VIEW_MODE_LIST toggle in main.rs at startup.
+static DEFAULT_VIEW_LIST: AtomicBool = AtomicBool::new(false);
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
@@ -19,6 +23,7 @@ pub struct Settings {
     pub thumbnail_max_mb: u64,
     pub confirm_trash: bool,
     pub theme_mode: String,
+    pub default_view: String,
 }
 
 impl Default for Settings {
@@ -29,6 +34,7 @@ impl Default for Settings {
             thumbnail_max_mb: 50,
             confirm_trash: true,
             theme_mode: "light".to_string(),
+            default_view: "grid".to_string(),
         }
     }
 }
@@ -45,6 +51,7 @@ pub fn load() -> Settings {
         thumbnail_max_mb: shared.thumbnail_max_mb,
         confirm_trash: settings.confirm_trash,
         theme_mode: shared.theme_mode,
+        default_view: settings.default_view,
     };
 
     apply_globals(&merged);
@@ -58,6 +65,7 @@ pub fn current() -> Settings {
         thumbnail_max_mb: thumbnail_max_mb(),
         confirm_trash: confirm_trash_enabled(),
         theme_mode: if is_dark_theme() { "dark" } else { "light" }.to_string(),
+        default_view: default_view(),
     }
 }
 
@@ -67,6 +75,7 @@ pub fn apply_and_save(
     thumbnail_max_mb: u64,
     confirm_trash: bool,
     theme_mode: &str,
+    default_view: &str,
 ) {
     let settings = Settings {
         show_hidden_files,
@@ -74,6 +83,7 @@ pub fn apply_and_save(
         thumbnail_max_mb,
         confirm_trash,
         theme_mode: theme_mode.to_string(),
+        default_view: default_view.to_string(),
     };
 
     apply_globals(&settings);
@@ -115,11 +125,20 @@ pub fn confirm_trash_enabled() -> bool {
     CONFIRM_TRASH.load(Ordering::Relaxed)
 }
 
+pub fn default_view() -> String {
+    if DEFAULT_VIEW_LIST.load(Ordering::Relaxed) {
+        "list".to_string()
+    } else {
+        "grid".to_string()
+    }
+}
+
 fn apply_globals(settings: &Settings) {
     SHOW_HIDDEN.store(settings.show_hidden_files, Ordering::Relaxed);
     THUMBNAILS_ENABLED.store(settings.enable_thumbnails, Ordering::Relaxed);
     THUMBNAIL_MAX_MB.store(settings.thumbnail_max_mb, Ordering::Relaxed);
     CONFIRM_TRASH.store(settings.confirm_trash, Ordering::Relaxed);
+    DEFAULT_VIEW_LIST.store(settings.default_view == "list", Ordering::Relaxed);
 
     let dark = settings.theme_mode == "dark";
     THEME_MODE.store(dark, Ordering::Relaxed);
