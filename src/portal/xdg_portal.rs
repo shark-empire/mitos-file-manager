@@ -37,13 +37,12 @@
 //!   a compiler to check against; if `cargo check` flags `option_bool`
 //!   below, that's the one function to look at first.
 
+use gtk::gio::prelude::FileExt;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use gtk::gio::prelude::FileExt; 
 // Or, use the wildcard: use gtk::gio::prelude::*;
-
 
 use zbus::blocking::Connection;
 use zbus::interface;
@@ -248,9 +247,7 @@ fn option_bool(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
         return false;
     };
 
-      (*v).clone()
-        .downcast::<bool>()
-        .unwrap_or(false)
+    (*v).clone().downcast::<bool>().unwrap_or(false)
 }
 
 fn path_to_file_uri(path: &str) -> String {
