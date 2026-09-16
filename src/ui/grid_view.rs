@@ -121,7 +121,7 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
         });
 
         // When retrieving:
-        get_obj_data::<_, std::rc::Rc<glib::SignalHandlerId>>(item, "thumbnail-signal-handler")
+        get_obj_data::<_, std::rc::Rc<glib::SignalHandlerId>>(item, "thumbnail-signal-handler");
 
 
         // Images either already have a cached thumbnail or can be shown
