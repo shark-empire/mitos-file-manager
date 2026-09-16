@@ -157,7 +157,7 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
         };
 
         if let Some(handler_id) =
-            get_obj_data::<_, glib::SignalHandlerId>(item, "thumbnail-signal-handler")
+            get_obj_data::<_, std::rc::Rc<glib::SignalHandlerId>>(item, "thumbnail-signal-handler")
         {
             item_obj.disconnect(handler_id);
         }
