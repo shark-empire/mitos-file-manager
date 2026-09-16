@@ -1,6 +1,30 @@
 # CHANGES
 
-## This session — closing out the Phase 1-5 roadmap gaps
+## This session — recommended default apps
+
+Added a "Set Recommended Defaults" button to Settings
+(`mime/applications.rs::apply_recommended_defaults`, wired into
+`ui/settings.rs`): sets mpv (falling back to Celluloid if mpv isn't
+installed) as the default for a curated list of common video and audio
+MIME types, and GNOME Text Editor for a curated list of text/code MIME
+types. Reuses the exact same `set_default_app`/`gio::AppInfo` mechanism
+the per-file Properties > Open With tab already used — this is just that,
+applied in bulk to a hardcoded MIME list instead of one file at a time.
+
+Skips (doesn't error on) any category whose app isn't installed — the
+status label after clicking says exactly which categories were set and
+which were skipped. `gio::DesktopAppInfo::new("mpv.desktop")` returning
+`None` means mpv isn't on the system, not a bug.
+
+The MIME lists are curated, not exhaustive — common containers/codecs for
+video and audio, `text/plain` + `text/markdown` + a handful of common
+source-file types for text. Add more to `RECOMMENDED_DEFAULTS` in
+`mime/applications.rs` if a format you use isn't covered.
+
+Same caveat as every session so far: no compiler available, please
+`cargo check` before merging.
+
+## Previous session — closing out the Phase 1-5 roadmap gaps
 
 Like the previous pass, no network and no Rust toolchain were available
 while making these changes, so **please run `cargo check` / `cargo build`
@@ -59,7 +83,7 @@ mount/unmount). Fixed what was actually broken or missing:
     the path scheme, reusing the existing `PortalRequest` channel) is
     higher-confidence.
 
-## Previous session
+## Two sessions ago
 
 Fixed CI warnings and wired up dead code: the `desktop` module wasn't
 declared in `main.rs` (~800 lines dead), "Set Default App" was a
