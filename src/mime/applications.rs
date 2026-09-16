@@ -60,7 +60,10 @@ struct DefaultAppGroup {
 const RECOMMENDED_DEFAULTS: &[DefaultAppGroup] = &[
     DefaultAppGroup {
         label: "Video",
-        desktop_ids: &["mpv.desktop", "io.github.celluloid_player.Celluloid.desktop"],
+        desktop_ids: &[
+            "mpv.desktop",
+            "io.github.celluloid_player.Celluloid.desktop",
+        ],
         mime_types: &[
             "video/mp4",
             "video/x-matroska",
@@ -78,7 +81,10 @@ const RECOMMENDED_DEFAULTS: &[DefaultAppGroup] = &[
     },
     DefaultAppGroup {
         label: "Audio",
-        desktop_ids: &["mpv.desktop", "io.github.celluloid_player.Celluloid.desktop"],
+        desktop_ids: &[
+            "mpv.desktop",
+            "io.github.celluloid_player.Celluloid.desktop",
+        ],
         mime_types: &[
             "audio/mpeg",
             "audio/flac",
