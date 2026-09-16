@@ -101,32 +101,11 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
     }
 
     // --- 3. DEVICES & VOLUMES ---
-    let monitor = gio::VolumeMonitor::get();
-    let mounts = monitor.mounts();
+    let devices = external_mounts();
 
-    // Filter out standard system mounts (like /, /boot, /home) to only show external/network drives
-    let external_mounts: Vec<_> = mounts
-        .into_iter()
-        .filter(|m| {
-            if let Some(path) = m.root().path() {
-                let path_str = path.to_string_lossy();
-                // Keep if it's in /media, /mnt, /run/media, or a network scheme (smb, sftp)
-                path_str.starts_with("/media")
-                    || path_str.starts_with("/mnt")
-                    || path_str.starts_with("/run/media")
-                    || m.root().uri().starts_with("smb://")
-                    || m.root().uri().starts_with("sftp://")
-                    || m.root().uri().starts_with("ftp://")
-                    || m.can_eject()
-            } else {
-                false
-            }
-        })
-        .collect();
-
-    if !external_mounts.is_empty() {
+    if !devices.is_empty() {
         add_header(list, "Devices");
-        for mount in external_mounts {
+        for mount in devices {
             let name = mount.name();
             let path = mount.root().path().unwrap_or_else(|| PathBuf::from("/"));
 
@@ -217,6 +196,34 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
         row.set_widget_name("action:connect-to-server");
         list.append(&row);
     }
+}
+
+/// Currently-mounted volumes MITOS Files treats as "external" -- shown in
+/// the sidebar's Devices section, and (via `trash::list`/`trash::empty`)
+/// scanned for their own per-device trash can. Removable media, or
+/// anything mounted over a network share.
+pub fn external_mounts() -> Vec<gio::Mount> {
+    let monitor = gio::VolumeMonitor::get();
+
+    monitor
+        .mounts()
+        .into_iter()
+        .filter(|m| {
+            if let Some(path) = m.root().path() {
+                let path_str = path.to_string_lossy();
+                // Keep if it's in /media, /mnt, /run/media, or a network scheme (smb, sftp)
+                path_str.starts_with("/media")
+                    || path_str.starts_with("/mnt")
+                    || path_str.starts_with("/run/media")
+                    || m.root().uri().starts_with("smb://")
+                    || m.root().uri().starts_with("sftp://")
+                    || m.root().uri().starts_with("ftp://")
+                    || m.can_eject()
+            } else {
+                false
+            }
+        })
+        .collect()
 }
 
 fn add_header(list: &ListBox, text: &str) {

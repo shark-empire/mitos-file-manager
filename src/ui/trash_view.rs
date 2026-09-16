@@ -1,5 +1,6 @@
 use crate::filesystem::trash;
 use crate::ui::dialogs;
+use crate::ui::sidebar;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
@@ -7,13 +8,28 @@ use gtk::{
     ResponseType, ScrolledWindow, SelectionMode,
 };
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::rc::Rc;
+
+/// Mounted volumes to also check for a per-device trash can, as (display
+/// name, mount path) pairs -- see `filesystem::trash::list`. Same filter
+/// `sidebar` uses for its Devices section, so "does this drive show in
+/// the sidebar" and "does its trash get checked" always agree.
+fn extra_trash_roots() -> Vec<(String, PathBuf)> {
+    sidebar::external_mounts()
+        .into_iter()
+        .filter_map(|mount| {
+            let path = mount.root().path()?;
+            Some((mount.name().to_string(), path))
+        })
+        .collect()
+}
 
 pub fn show(parent: &ApplicationWindow, refresh_main: Rc<dyn Fn()>) {
     let window = gtk::Window::builder()
         .title("Trash")
         .transient_for(parent)
-        .default_width(700)
+        .default_width(760)
         .default_height(480)
         .build();
 
@@ -66,11 +82,18 @@ pub fn show(parent: &ApplicationWindow, refresh_main: Rc<dyn Fn()>) {
         let refresh_main = refresh_main.clone();
 
         empty_btn.connect_clicked(move |_| {
-            if crate::config::settings::confirm_trash_enabled() && !confirm_empty(&window) {
+            if crate::config::settings::confirm_trash_enabled()
+                && !confirm_action(
+                    &window,
+                    "Empty Trash",
+                    "All items in the trash -- including anything trashed from other drives \
+                     or network shares -- will be permanently deleted.\n\nContinue?",
+                )
+            {
                 return;
             }
 
-            if let Err(err) = trash::empty() {
+            if let Err(err) = trash::empty(&extra_trash_roots()) {
                 dialogs::show_error(&window, &format!("Could not empty trash: {err}"));
             }
 
@@ -87,7 +110,7 @@ fn populate(list: &ListBox, parent: &gtk::Window, refresh_main: Rc<dyn Fn()>) {
         list.remove(&row);
     }
 
-    let items = trash::list();
+    let items = trash::list(&extra_trash_roots());
 
     if items.is_empty() {
         let row = ListBoxRow::new();
@@ -109,11 +132,16 @@ fn populate(list: &ListBox, parent: &gtk::Window, refresh_main: Rc<dyn Fn()>) {
         row_box.set_margin_start(6);
         row_box.set_margin_end(6);
 
-        let label_text = format!(
-            "{}\nOriginal location: {}",
+        let mut label_text = format!(
+            "{}\nOriginal location: {}  ·  {}",
             item.trash_name,
-            item.original_path.display()
+            item.original_path.display(),
+            item.location_label,
         );
+
+        if let Some(deleted) = &item.deletion_date {
+            label_text.push_str(&format!("\nDeleted: {deleted}"));
+        }
 
         let label = Label::new(Some(&label_text));
         label.set_wrap(true);
@@ -121,38 +149,72 @@ fn populate(list: &ListBox, parent: &gtk::Window, refresh_main: Rc<dyn Fn()>) {
         label.set_hexpand(true);
 
         let restore_btn = Button::with_label("Restore");
+        let delete_btn = Button::with_label("Delete Forever");
+        delete_btn.add_css_class("destructive-action");
 
-        let item = item.clone();
-        let list_for_closure = list.clone();
-        let parent = parent.clone();
-        let refresh_main = refresh_main.clone();
+        {
+            let item = item.clone();
+            let list_for_closure = list.clone();
+            let parent = parent.clone();
+            let refresh_main = refresh_main.clone();
 
-        restore_btn.connect_clicked(move |_| {
-            if let Err(err) = trash::restore(&item) {
-                dialogs::show_error(&parent, &format!("Could not restore item: {err}"));
-            }
+            restore_btn.connect_clicked(move |_| {
+                if let Err(err) = trash::restore(&item) {
+                    dialogs::show_error(&parent, &format!("Could not restore item: {err}"));
+                }
 
-            populate(&list_for_closure, &parent, refresh_main.clone());
-            refresh_main();
-        });
+                populate(&list_for_closure, &parent, refresh_main.clone());
+                refresh_main();
+            });
+        }
+
+        {
+            let item = item.clone();
+            let list_for_closure = list.clone();
+            let parent = parent.clone();
+            let refresh_main = refresh_main.clone();
+            let item_name = item.trash_name.clone();
+
+            delete_btn.connect_clicked(move |_| {
+                if crate::config::settings::confirm_trash_enabled()
+                    && !confirm_action(
+                        &parent,
+                        "Delete Forever",
+                        &format!("\"{item_name}\" will be permanently deleted.\n\nContinue?"),
+                    )
+                {
+                    return;
+                }
+
+                if let Err(err) = trash::delete_forever(&item) {
+                    dialogs::show_error(&parent, &format!("Could not delete item: {err}"));
+                }
+
+                populate(&list_for_closure, &parent, refresh_main.clone());
+                refresh_main();
+            });
+        }
 
         row_box.append(&label);
         row_box.append(&restore_btn);
+        row_box.append(&delete_btn);
 
         row.set_child(Some(&row_box));
         list.append(&row);
     }
 }
 
-fn confirm_empty(parent: &gtk::Window) -> bool {
+/// Shared yes/no confirmation dialog for both "Empty Trash" and per-item
+/// "Delete Forever" -- same shape, different title/message.
+fn confirm_action(parent: &gtk::Window, title: &str, message: &str) -> bool {
     let dialog = gtk::Dialog::builder()
-        .title("Empty Trash")
+        .title(title)
         .transient_for(parent)
         .modal(true)
         .build();
 
     dialog.add_button("Cancel", ResponseType::Cancel);
-    dialog.add_button("Empty Trash", ResponseType::Accept);
+    dialog.add_button(title, ResponseType::Accept);
 
     let content = dialog.content_area();
 
@@ -161,9 +223,7 @@ fn confirm_empty(parent: &gtk::Window) -> bool {
     content.set_margin_start(12);
     content.set_margin_end(12);
 
-    let label = Label::new(Some(
-        "All items in the trash will be permanently deleted.\n\nContinue?",
-    ));
+    let label = Label::new(Some(message));
 
     label.set_wrap(true);
     content.append(&label);
