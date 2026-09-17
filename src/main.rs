@@ -2015,19 +2015,7 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         help_btn.connect_clicked(move |_| {
             let shortcuts = ui::accessibility::setup_keyboard_help();
 
-            let dialog = gtk::Dialog::builder()
-                .title("Keyboard Shortcuts")
-                .transient_for(&window)
-                .modal(true)
-                .build();
-
-            dialog.add_button("Close", gtk::ResponseType::Close);
-
-            let content = dialog.content_area();
-            content.set_margin_top(12);
-            content.set_margin_bottom(12);
-            content.set_margin_start(12);
-            content.set_margin_end(12);
+            let dialog = dialogs::build_dialog(&window, "Keyboard Shortcuts");
 
             let grid = gtk::Grid::new();
             grid.set_column_spacing(16);
@@ -2047,9 +2035,13 @@ fn build_ui(app: &Application, initial_args: &[String]) {
                 row += 1;
             }
 
-            content.append(&grid);
-            dialog.connect_response(|dialog, _| dialog.close());
-            dialog.present();
+            dialog.content.append(&grid);
+
+            let close_btn = dialogs::dialog_button(&dialog.button_row, "Close");
+            let window_for_close = dialog.window.clone();
+            close_btn.connect_clicked(move |_| window_for_close.close());
+
+            dialog.window.present();
         });
     }
 
@@ -3438,21 +3430,7 @@ fn show_default_app_picker(
         return;
     }
 
-    let dialog = gtk::Dialog::builder()
-        .title("Set Default Application")
-        .transient_for(window)
-        .modal(true)
-        .build();
-
-    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
-    dialog.add_button("Set as Default", gtk::ResponseType::Accept);
-
-    let content = dialog.content_area();
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(12);
-    content.set_margin_end(12);
-    content.set_spacing(6);
+    let dialog = dialogs::build_dialog(window, "Set Default Application");
 
     let list = ListBox::new();
     list.set_selection_mode(SelectionMode::Single);
@@ -3479,28 +3457,37 @@ fn show_default_app_picker(
         .build();
     scrolled.set_child(Some(&list));
 
-    content.append(&scrolled);
+    dialog.content.append(&scrolled);
+
+    let cancel_btn = dialogs::dialog_button(&dialog.button_row, "Cancel");
+    let accept_btn = dialogs::dialog_button(&dialog.button_row, "Set as Default");
+    accept_btn.add_css_class("suggested-action");
+
+    {
+        let window = dialog.window.clone();
+        cancel_btn.connect_clicked(move |_| window.close());
+    }
 
     let mime = mime.to_string();
-    let window = window.clone();
+    let window_for_accept = window.clone();
+    let dialog_window = dialog.window.clone();
 
-    dialog.connect_response(move |dialog, response| {
-        if response == gtk::ResponseType::Accept {
-            if let Some(row) = list.selected_row() {
-                let index = row.index();
-                if index >= 0 {
-                    if let Some((_, app_info)) = display_apps.get(index as usize) {
-                        if let Err(err) =
-                            crate::mime::applications::set_default_app(app_info, &mime)
-                        {
-                            crate::ui::dialogs::show_error(&window, &format!("Failed: {err}"));
-                        }
+    accept_btn.connect_clicked(move |_| {
+        if let Some(row) = list.selected_row() {
+            let index = row.index();
+            if index >= 0 {
+                if let Some((_, app_info)) = display_apps.get(index as usize) {
+                    if let Err(err) = crate::mime::applications::set_default_app(app_info, &mime) {
+                        crate::ui::dialogs::show_error(
+                            &window_for_accept,
+                            &format!("Failed: {err}"),
+                        );
                     }
                 }
             }
         }
-        dialog.close();
+        dialog_window.close();
     });
 
-    dialog.present();
+    dialog.window.present();
 }

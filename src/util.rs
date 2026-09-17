@@ -24,3 +24,17 @@ pub fn get_obj_data<O: glib::object::ObjectType, T: Clone + 'static>(
 ) -> Option<T> {
     unsafe { obj.data::<T>(key).map(|ptr| ptr.as_ref().clone()) }
 }
+
+/// Remove and return typed Rust-side data previously stored with
+/// [`set_obj_data`], taking ownership directly instead of cloning it.
+/// Returns `None` if nothing was stored under `key`. Needed for types
+/// that don't implement `Clone` -- e.g. `glib::SignalHandlerId`, which
+/// deliberately isn't `Clone` (to prevent accidentally disconnecting the
+/// same signal handler twice), so [`get_obj_data`] can't be used for it
+/// at all.
+///
+/// `ObjectExt::steal_data` is `unsafe fn` for the same reason as
+/// `data`/`set_data` above; this keeps it behind the same safe wrapper.
+pub fn take_obj_data<O: glib::object::ObjectType, T: 'static>(obj: &O, key: &str) -> Option<T> {
+    unsafe { obj.steal_data::<T>(key) }
+}
