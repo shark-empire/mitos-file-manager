@@ -4,7 +4,7 @@ use gtk::prelude::*;
 
 use crate::filesystem::directory::Item;
 use crate::ui::item_object::ItemObject;
-use crate::util::{get_obj_data, set_obj_data};
+use crate::util::{get_obj_data, set_obj_data, take_obj_data};
 
 pub fn create_model() -> (gio::ListStore, gtk::MultiSelection) {
     let store = gio::ListStore::new::<ItemObject>();
@@ -120,8 +120,7 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
             );
         });
 
-        // When retrieving:
-        get_obj_data::<_, std::rc::Rc<glib::SignalHandlerId>>(item, "thumbnail-signal-handler");
+        set_obj_data(item, "thumbnail-signal-handler", handler_id);
 
         // Images either already have a cached thumbnail or can be shown
         // directly (both handled synchronously in `thumbnail_path_for`),
@@ -157,7 +156,7 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
         };
 
         if let Some(handler_id) =
-            get_obj_data::<_, std::rc::Rc<glib::SignalHandlerId>>(item, "thumbnail-signal-handler")
+            take_obj_data::<_, glib::SignalHandlerId>(item, "thumbnail-signal-handler")
         {
             item_obj.disconnect(handler_id);
         }

@@ -5,7 +5,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
     ApplicationWindow, Box as GtkBox, Button, Label, ListBox, ListBoxRow, Orientation,
-    ResponseType, ScrolledWindow, SelectionMode,
+    ScrolledWindow, SelectionMode,
 };
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -207,47 +207,55 @@ fn populate(list: &ListBox, parent: &gtk::Window, refresh_main: Rc<dyn Fn()>) {
 /// Shared yes/no confirmation dialog for both "Empty Trash" and per-item
 /// "Delete Forever" -- same shape, different title/message.
 fn confirm_action(parent: &gtk::Window, title: &str, message: &str) -> bool {
-    let dialog = gtk::Dialog::builder()
-        .title(title)
-        .transient_for(parent)
-        .modal(true)
-        .build();
-
-    dialog.add_button("Cancel", ResponseType::Cancel);
-    dialog.add_button(title, ResponseType::Accept);
-
-    let content = dialog.content_area();
-
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(12);
-    content.set_margin_end(12);
+    let dialog = dialogs::build_dialog(parent, title);
 
     let label = Label::new(Some(message));
-
     label.set_wrap(true);
-    content.append(&label);
+    dialog.content.append(&label);
+
+    let cancel_btn = dialogs::dialog_button(&dialog.button_row, "Cancel");
+    let accept_btn = dialogs::dialog_button(&dialog.button_row, title);
+    accept_btn.add_css_class("destructive-action");
 
     let loop_ = glib::MainLoop::new(None, false);
     let result = Rc::new(Cell::new(false));
+    // Guards against responding twice -- see the identical pattern (and
+    // the reason for it) in dialogs::choose_conflict_policy.
+    let responded = Rc::new(Cell::new(false));
 
-    let result_clone = result.clone();
-    let loop_clone = loop_.clone();
+    let respond: Rc<dyn Fn(bool)> = {
+        let result = result.clone();
+        let responded = responded.clone();
+        let loop_ = loop_.clone();
+        let window = dialog.window.clone();
 
-    dialog.connect_response(move |dialog, response| {
-        result_clone.set(response == ResponseType::Accept);
-        dialog.close();
-        loop_clone.quit();
-    });
+        Rc::new(move |accepted: bool| {
+            if responded.replace(true) {
+                return;
+            }
+            result.set(accepted);
+            loop_.quit();
+            window.close();
+        })
+    };
 
-    let loop_close = loop_.clone();
+    {
+        let respond = respond.clone();
+        cancel_btn.connect_clicked(move |_| respond(false));
+    }
+    {
+        let respond = respond.clone();
+        accept_btn.connect_clicked(move |_| respond(true));
+    }
+    {
+        let respond = respond.clone();
+        dialog.window.connect_close_request(move |_| {
+            respond(false);
+            glib::Propagation::Proceed
+        });
+    }
 
-    dialog.connect_close_request(move |_| {
-        loop_close.quit();
-        glib::Propagation::Proceed
-    });
-
-    dialog.present();
+    dialog.window.present();
     loop_.run();
 
     result.get()

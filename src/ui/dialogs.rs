@@ -1,5 +1,65 @@
 use gtk::prelude::*;
-use gtk::{ApplicationWindow, Dialog, Entry, Label, ResponseType};
+use gtk::{ApplicationWindow, Entry, Label};
+
+// `gtk::Dialog` / `DialogBuilder` / `DialogExt::{add_button, content_area,
+// connect_response}` are all deprecated since GTK 4.10. Per the GTK team's
+// own "Preparing for GTK 5" migration notes, there's no direct
+// replacement widget -- "the recommended replacement is to just create
+// your own window and add buttons as required" -- so every dialog in this
+// file is a plain `gtk::Window` with a content box and a button row,
+// built via `build_dialog`/`dialog_button` below. Each button gets its
+// own `connect_clicked` handler instead of one `connect_response` keyed
+// off a `ResponseType`.
+
+/// The pieces of a `build_dialog` window a caller fills in: `content` for
+/// whatever the dialog is asking about (a label, an entry, ...), and
+/// `button_row` to add buttons to via `dialog_button`.
+pub(crate) struct DialogScaffold {
+    pub(crate) window: gtk::Window,
+    pub(crate) content: gtk::Box,
+    pub(crate) button_row: gtk::Box,
+}
+
+pub(crate) fn build_dialog(parent: &impl IsA<gtk::Window>, title: &str) -> DialogScaffold {
+    let window = gtk::Window::builder()
+        .title(title)
+        .transient_for(parent)
+        .modal(true)
+        .resizable(false)
+        .build();
+
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+
+    let button_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    button_row.set_halign(gtk::Align::End);
+    button_row.set_margin_start(12);
+    button_row.set_margin_end(12);
+    button_row.set_margin_bottom(12);
+
+    root.append(&content);
+    root.append(&button_row);
+    window.set_child(Some(&root));
+
+    DialogScaffold {
+        window,
+        content,
+        button_row,
+    }
+}
+
+/// Add a button to a scaffold's button row and return it for the caller
+/// to `.connect_clicked()`.
+pub(crate) fn dialog_button(row: &gtk::Box, label: &str) -> gtk::Button {
+    let button = gtk::Button::with_label(label);
+    row.append(&button);
+    button
+}
 
 pub fn show_text_dialog<F>(
     parent: &ApplicationWindow,
@@ -10,89 +70,61 @@ pub fn show_text_dialog<F>(
 ) where
     F: Fn(String) + 'static,
 {
-    let dialog = Dialog::builder()
-        .title(title)
-        .transient_for(parent)
-        .modal(true)
-        .build();
-
-    dialog.add_button("Cancel", ResponseType::Cancel);
-    dialog.add_button(ok_label, ResponseType::Accept);
-
-    let content = dialog.content_area();
-
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(12);
-    content.set_margin_end(12);
+    let dialog = build_dialog(parent, title);
 
     let entry = Entry::new();
     entry.set_text(initial);
+    dialog.content.append(&entry);
 
-    content.append(&entry);
+    let cancel_btn = dialog_button(&dialog.button_row, "Cancel");
+    let ok_btn = dialog_button(&dialog.button_row, ok_label);
+    ok_btn.add_css_class("suggested-action");
 
-    dialog.connect_response(move |dialog, response| {
-        if response == ResponseType::Accept {
+    {
+        let window = dialog.window.clone();
+        cancel_btn.connect_clicked(move |_| window.close());
+    }
+
+    {
+        let window = dialog.window.clone();
+        ok_btn.connect_clicked(move |_| {
             let text = entry.text().to_string();
             on_accept(text.trim().to_string());
-        }
+            window.close();
+        });
+    }
 
-        dialog.close();
-    });
-
-    dialog.present();
+    dialog.window.present();
 }
 
 pub fn show_error(parent: &impl IsA<gtk::Window>, message: &str) {
-    let dialog = Dialog::builder()
-        .title("Error")
-        .transient_for(parent)
-        .modal(true)
-        .build();
-
-    dialog.add_button("OK", ResponseType::Close);
+    let dialog = build_dialog(parent, "Error");
 
     let label = Label::new(Some(message));
     label.set_wrap(true);
+    dialog.content.append(&label);
 
-    label.set_margin_top(12);
-    label.set_margin_bottom(12);
-    label.set_margin_start(12);
-    label.set_margin_end(12);
+    let ok_btn = dialog_button(&dialog.button_row, "OK");
 
-    dialog.content_area().append(&label);
+    let window = dialog.window.clone();
+    ok_btn.connect_clicked(move |_| window.close());
 
-    dialog.connect_response(|dialog, _| {
-        dialog.close();
-    });
-
-    dialog.present();
+    dialog.window.present();
 }
 
 pub fn show_info(parent: &ApplicationWindow, title: &str, message: &str) {
-    let dialog = Dialog::builder()
-        .title(title)
-        .transient_for(parent)
-        .modal(true)
-        .build();
-
-    dialog.add_button("OK", ResponseType::Close);
+    let dialog = build_dialog(parent, title);
 
     let label = Label::new(Some(message));
     label.set_wrap(true);
+    dialog.content.append(&label);
 
-    label.set_margin_top(12);
-    label.set_margin_bottom(12);
-    label.set_margin_start(12);
-    label.set_margin_end(12);
+    let ok_btn = dialog_button(&dialog.button_row, "OK");
 
-    dialog.content_area().append(&label);
+    let window = dialog.window.clone();
+    ok_btn.connect_clicked(move |_| window.close());
 
-    dialog.connect_response(|dialog, _| {
-        dialog.close();
-    });
-
-    dialog.present();
+    dialog.window.present();
 }
 
 pub fn choose_conflict_policy(
@@ -104,23 +136,7 @@ pub fn choose_conflict_policy(
     use std::cell::Cell;
     use std::rc::Rc;
 
-    let dialog = Dialog::builder()
-        .title("File Conflict")
-        .transient_for(parent)
-        .modal(true)
-        .build();
-
-    dialog.add_button("Cancel", ResponseType::Cancel);
-    dialog.add_button("Skip Existing", ResponseType::Reject);
-    dialog.add_button("Replace", ResponseType::Yes);
-    dialog.add_button("Keep Both", ResponseType::Accept);
-
-    let content = dialog.content_area();
-
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(12);
-    content.set_margin_end(12);
+    let dialog = build_dialog(parent, "File Conflict");
 
     let noun = if conflict_count == 1 { "file" } else { "files" };
 
@@ -128,30 +144,63 @@ pub fn choose_conflict_policy(
         "{conflict_count} {noun} already {} in the destination.\n\nWhat should MITOS Files do? This choice applies to all of them.",
         if conflict_count == 1 { "exists" } else { "exist" }
     )));
-
     label.set_wrap(true);
-    content.append(&label);
+    dialog.content.append(&label);
+
+    let cancel_btn = dialog_button(&dialog.button_row, "Cancel");
+    let skip_btn = dialog_button(&dialog.button_row, "Skip Existing");
+    let replace_btn = dialog_button(&dialog.button_row, "Replace");
+    let keep_both_btn = dialog_button(&dialog.button_row, "Keep Both");
+    keep_both_btn.add_css_class("suggested-action");
 
     let loop_ = glib::MainLoop::new(None, false);
-    let result = Rc::new(Cell::new(None));
+    let result: Rc<Cell<Option<ConflictPolicy>>> = Rc::new(Cell::new(None));
+    // Guards against responding twice: closing the window from inside a
+    // button handler also fires `connect_close_request` below, which
+    // would otherwise overwrite an already-chosen result with `None`.
+    let responded = Rc::new(Cell::new(false));
 
-    let result_clone = result.clone();
-    let loop_clone = loop_.clone();
+    let respond: Rc<dyn Fn(Option<ConflictPolicy>)> = {
+        let result = result.clone();
+        let responded = responded.clone();
+        let loop_ = loop_.clone();
+        let window = dialog.window.clone();
 
-    dialog.connect_response(move |dialog, response| {
-        let chosen = match response {
-            ResponseType::Yes => Some(ConflictPolicy::Replace),
-            ResponseType::Accept => Some(ConflictPolicy::KeepBoth),
-            ResponseType::Reject => Some(ConflictPolicy::SkipExisting),
-            _ => None,
-        };
+        Rc::new(move |policy: Option<ConflictPolicy>| {
+            if responded.replace(true) {
+                return;
+            }
+            result.set(policy);
+            loop_.quit();
+            window.close();
+        })
+    };
 
-        result_clone.set(chosen);
-        dialog.close();
-        loop_clone.quit();
-    });
+    {
+        let respond = respond.clone();
+        cancel_btn.connect_clicked(move |_| respond(None));
+    }
+    {
+        let respond = respond.clone();
+        skip_btn.connect_clicked(move |_| respond(Some(ConflictPolicy::SkipExisting)));
+    }
+    {
+        let respond = respond.clone();
+        replace_btn.connect_clicked(move |_| respond(Some(ConflictPolicy::Replace)));
+    }
+    {
+        let respond = respond.clone();
+        keep_both_btn.connect_clicked(move |_| respond(Some(ConflictPolicy::KeepBoth)));
+    }
+    {
+        let respond = respond.clone();
+        dialog.window.connect_close_request(move |_| {
+            respond(None);
+            glib::Propagation::Proceed
+        });
+    }
 
-    dialog.present();
+    dialog.window.present();
     loop_.run();
 
     result.get()
@@ -172,23 +221,7 @@ where
 
     let on_connected = Rc::new(on_connected);
 
-    let dialog = Dialog::builder()
-        .title("Connect to Server")
-        .transient_for(parent)
-        .modal(true)
-        .build();
-
-    dialog.add_button("Cancel", ResponseType::Cancel);
-    dialog.add_button("Connect", ResponseType::Accept);
-
-    let content = dialog.content_area();
-
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(12);
-    content.set_margin_end(12);
-
-    let inner = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let dialog = build_dialog(parent, "Connect to Server");
 
     let label = Label::new(Some(
         "Enter a network address:\nsmb://server/share · sftp://user@host/path · ftp://host/path",
@@ -200,59 +233,65 @@ where
     entry.set_placeholder_text(Some("smb://server/share"));
     entry.set_activates_default(true);
 
-    inner.append(&label);
-    inner.append(&entry);
-    content.append(&inner);
+    dialog.content.append(&label);
+    dialog.content.append(&entry);
 
-    dialog.set_default_widget(Some(&entry));
+    let cancel_btn = dialog_button(&dialog.button_row, "Cancel");
+    let connect_btn = dialog_button(&dialog.button_row, "Connect");
+    connect_btn.add_css_class("suggested-action");
+    dialog.window.set_default_widget(Some(&connect_btn));
 
-    let parent = parent.clone();
+    {
+        let window = dialog.window.clone();
+        cancel_btn.connect_clicked(move |_| window.close());
+    }
 
-    dialog.connect_response(move |dialog, response| {
-        if response != ResponseType::Accept {
-            dialog.close();
-            return;
-        }
+    {
+        let window = dialog.window.clone();
+        let parent = parent.clone();
 
-        let uri = entry.text().trim().to_string();
-        dialog.close();
+        connect_btn.connect_clicked(move |_| {
+            let uri = entry.text().trim().to_string();
+            window.close();
 
-        if uri.is_empty() {
-            return;
-        }
+            if uri.is_empty() {
+                return;
+            }
 
-        let file = gio::File::for_uri(&uri);
-        let file_for_result = file.clone();
-        let mount_op = gtk::MountOperation::new(Some(&parent));
-        let parent_for_error = parent.clone();
-        let on_connected = on_connected.clone();
+            let file = gio::File::for_uri(&uri);
+            let file_for_result = file.clone();
+            let mount_op = gtk::MountOperation::new(Some(&parent));
+            let parent_for_error = parent.clone();
+            let on_connected = on_connected.clone();
 
-        file.mount_enclosing_volume(
-            gio::MountMountFlags::NONE,
-            Some(&mount_op),
-            gio::Cancellable::NONE,
-            move |result| {
-                // Already being mounted (e.g. a second "Connect" while the
-                // first is still in flight) isn't a real failure -- fall
-                // through and try to resolve a local path regardless.
-                if let Err(err) = result {
-                    if !err.matches(gio::IOErrorEnum::AlreadyMounted) {
-                        show_error(&parent_for_error, &format!("Couldn't connect: {err}"));
-                        return;
+            file.mount_enclosing_volume(
+                gio::MountMountFlags::NONE,
+                Some(&mount_op),
+                gio::Cancellable::NONE,
+                move |result| {
+                    // Already being mounted (e.g. a second "Connect" while
+                    // the first is still in flight) isn't a real failure
+                    // -- fall through and try to resolve a local path
+                    // regardless.
+                    if let Err(err) = result {
+                        if !err.matches(gio::IOErrorEnum::AlreadyMounted) {
+                            show_error(&parent_for_error, &format!("Couldn't connect: {err}"));
+                            return;
+                        }
                     }
-                }
 
-                if let Some(path) = file_for_result.path() {
-                    on_connected(path);
-                } else {
-                    show_error(
-                        &parent_for_error,
-                        "Connected, but MITOS Files couldn't resolve a local path for it.",
-                    );
-                }
-            },
-        );
-    });
+                    if let Some(path) = file_for_result.path() {
+                        on_connected(path);
+                    } else {
+                        show_error(
+                            &parent_for_error,
+                            "Connected, but MITOS Files couldn't resolve a local path for it.",
+                        );
+                    }
+                },
+            );
+        });
+    }
 
-    dialog.present();
+    dialog.window.present();
 }
