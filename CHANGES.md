@@ -1,49 +1,75 @@
 # CHANGES
 
-## This session — cross-volume trash, per-item delete, deletion date
+## This session — first real `cargo check`, fixed everything it found
 
-`filesystem/trash.rs`'s `list`/`restore`/`empty` only ever looked at the
-home trash (`~/.local/share/Trash`). Deleting was already spec-correct —
-`operations::trash::delete` (the `trash` crate) puts a file removed from
-a USB drive or network share into a `.Trash-$uid`/`.Trash/$uid` can *on
-that volume*, per the XDG trash spec — but the trash view couldn't see,
-restore, or empty any of those, so they'd sit there invisibly.
+First pass verified against an actual compiler (GitHub Actions CI log,
+not hand-review) rather than best-effort-without-a-compiler like every
+session before it. It found exactly 4 errors and 2 warning categories;
+all fixed, nothing suppressed or deleted to make a warning go away.
 
-- `list`/`empty` now also take a list of (name, mount path) pairs and
-  check both spec-defined non-home trash locations on each — see
-  `topdir_trash_candidates` for the sticky-bit/symlink checks the spec
-  requires before trusting a shared `.Trash` dir.
-- `ui/sidebar.rs`'s mount-filtering got pulled out into
-  `sidebar::external_mounts()` so the trash view and the sidebar always
-  agree on which drives count — `ui/trash_view.rs` feeds that straight
-  into `trash::list`/`trash::empty`.
-- `TrashItem` gained `location_label` (which trash can an item came from)
-  and `deletion_date` (parsed from `.trashinfo`, previously ignored) —
-  both now shown per row.
-- Added `delete_forever` (permanent single-item delete) and a
-  corresponding button, confirmed the same way "Empty Trash" already was.
+**Errors, all in code from a prior session:**
+- `src/portal/xdg_portal.rs`: `option_bool` referenced an undefined `v`
+  (leftover from an earlier draft — the bound variable was `value`).
+  `save_file`'s `current_name` extraction used `String::try_from(...)`,
+  which doesn't exist for `OwnedValue`; switched both spots to
+  `.clone().downcast::<T>()`, which the compiler confirms *does* exist
+  directly on `OwnedValue` (no `Value::from(...)` wrapper needed — that
+  was a guess from before there was a compiler to check it against).
+- `src/ui/grid_view.rs`: the video-thumbnail `notify` signal handler was
+  computed but never actually stored (`set_obj_data` for it was missing
+  entirely — a leftover half-edit), and the cleanup side was reading it
+  back as `Rc<SignalHandlerId>` while `.disconnect()` wants a plain
+  `SignalHandlerId`. Turns out `glib::SignalHandlerId` deliberately
+  doesn't implement `Clone` at all (to prevent double-disconnecting a
+  handler) — confirmed from its docs, not guessed — so wrapping it in
+  `Rc` to work around that was the wrong fix. Added `take_obj_data` to
+  `util.rs` (uses `ObjectExt::steal_data`, which hands back ownership
+  directly instead of cloning, so it works for non-`Clone` types), wired
+  the missing `set_obj_data` call back in, and used `take_obj_data` on
+  the read side instead of `Rc`.
 
-Same caveat as always: no compiler available here, please `cargo check`
-before merging.
+**Warnings:**
+- One unused import (`gtk::glib::prelude::*` in `mime/applications.rs`)
+  -- `gio::prelude::*` already covers what it was added for. Removed.
+- ~70 warnings, all the same root cause: `gtk::Dialog` (and
+  `DialogBuilder`/`DialogExt::{add_button,content_area,connect_response}`)
+  is deprecated since GTK 4.10 -- flagged as out-of-scope by two earlier
+  sessions' CHANGES.md entries, but "fix the warnings" this time meant
+  actually doing it rather than deferring a third time. Per GTK's own
+  migration notes there's no drop-in replacement widget for a dialog
+  with custom content ("just create your own window and add buttons as
+  required"), so every dialog in the app (`ui/dialogs.rs`'s five,
+  `ui/trash_view.rs`'s one, `main.rs`'s two) is now a plain `gtk::Window`
+  built through a small shared scaffold (`dialogs::build_dialog` +
+  `dialogs::dialog_button`, now `pub(crate)` so `trash_view.rs`/`main.rs`
+  can reuse it too) instead of one Dialog-specific widget each. The two
+  that block synchronously on a nested `glib::MainLoop`
+  (`choose_conflict_policy`, `confirm_action`) needed a `responded` guard
+  added -- closing the window from a button handler also fires
+  `connect_close_request`, which would otherwise silently overwrite an
+  already-chosen answer with "cancelled."
+
+No compiler here either, so this was hand-verified against the exact
+error text/line numbers from the uploaded log rather than a fresh
+`cargo check` -- please run one more before merging, though this pass
+should be materially more reliable than earlier ones for exactly that
+reason: it's reacting to real compiler output instead of guessing at it.
 
 ## Earlier sessions
 
-- **Recommended defaults**: a Settings button that bulk-sets mpv/Celluloid
-  as default for common video/audio MIME types and GNOME Text Editor for
-  common text/code ones (`mime/applications.rs::apply_recommended_defaults`).
-- **Roadmap-gap pass**: fixed the status bar's free-space number (was
-  reading directory-entry size, not `statvfs`), added real video
-  thumbnails (`ffmpeg`, async, cached), a "Connect to Server" dialog for
-  new `smb://`/`sftp://`/`ftp://` mounts, a persisted default view
-  (grid/list) setting, a conflict dialog that says how many files
-  conflict, and a real `org.freedesktop.portal.FileChooser` implementation
-  (`src/portal/xdg_portal.rs`) alongside the existing custom
-  `org.mitos.FilePicker` — the portal code is the least-verified in the
-  project (no compiler, no D-Bus session to test against); see the doc
-  comment at the top of that file for exactly which parts to check first.
-- **CI-warnings pass**: wired up the previously-undeclared `desktop`
-  module, backed "Set Default App" with real `.desktop`-file writing,
-  made theme changes live-reload, verified the archive extractor against
-  zip-slip (already safe). ~40 `GTK4 Dialog` deprecation warnings are
-  still untouched (out of scope, `Dialog` → `AlertDialog`/custom windows
-  is a bigger migration).
+- Closed the cross-volume trash gap: `list`/`restore`/`empty` now also
+  check `.Trash-$uid`/`.Trash/$uid` on other mounted volumes, not just
+  the home trash; added per-item permanent delete and a shown deletion
+  date.
+- Added a Settings button to bulk-set mpv/Celluloid and GNOME Text
+  Editor as defaults for common video/audio/text MIME types.
+- Fixed the status bar's free-space number (was directory-entry size,
+  not real `statvfs`), added real async video thumbnails, "Connect to
+  Server" for new network mounts, a persisted default view (grid/list)
+  setting, a conflict dialog that shows a count, and a real
+  `org.freedesktop.portal.FileChooser` implementation alongside the
+  existing custom `org.mitos.FilePicker`.
+- Wired up the previously-undeclared `desktop` module, backed "Set
+  Default App" with real `.desktop`-file writing, made theme changes
+  live-reload, verified the archive extractor against zip-slip (already
+  safe).
