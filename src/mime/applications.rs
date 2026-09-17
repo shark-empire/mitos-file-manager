@@ -1,6 +1,5 @@
 use gtk::gio;
 use gtk::gio::prelude::*;
-use gtk::glib::prelude::*;
 use std::path::Path;
 
 /// Get all applications that can handle a given MIME type.
