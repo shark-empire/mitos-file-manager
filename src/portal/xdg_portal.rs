@@ -113,7 +113,7 @@ impl FileChooserPortal {
     ) -> zbus::fdo::Result<OwnedObjectPath> {
         let default_name = options
             .get("current_name")
-            .and_then(|v| String::try_from(v.clone()).ok())
+            .and_then(|v| v.clone().downcast::<String>().ok())
             .unwrap_or_else(|| "Untitled".to_string());
 
         let title = title.to_string();
@@ -247,7 +247,7 @@ fn option_bool(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
         return false;
     };
 
-    (*v).clone().downcast::<bool>().unwrap_or(false)
+    value.clone().downcast::<bool>().unwrap_or(false)
 }
 
 fn path_to_file_uri(path: &str) -> String {
