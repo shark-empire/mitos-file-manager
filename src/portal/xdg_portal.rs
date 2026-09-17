@@ -247,7 +247,7 @@ fn option_bool(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
         return false;
     };
 
-    bool::try_from(&value).unwrap_or(false)
+    bool::try_from(value).unwrap_or(false)
 }
 
 fn path_to_file_uri(path: &str) -> String {
