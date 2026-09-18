@@ -1,66 +1,83 @@
 # CHANGES
 
-## This session — first real `cargo check`, fixed everything it found
+## This session — SaveFiles portal support, and a full re-theme
 
-First pass verified against an actual compiler (GitHub Actions CI log,
-not hand-review) rather than best-effort-without-a-compiler like every
-session before it. It found exactly 4 errors and 2 warning categories;
-all fixed, nothing suppressed or deleted to make a warning go away.
+Two mostly-unrelated pieces of work, both hand-verified only (still no
+compiler or display here -- see the note at the end of each).
 
-**Errors, all in code from a prior session:**
-- `src/portal/xdg_portal.rs`: `option_bool` referenced an undefined `v`
-  (leftover from an earlier draft — the bound variable was `value`).
-  `save_file`'s `current_name` extraction used `String::try_from(...)`,
-  which doesn't exist for `OwnedValue`; switched both spots to
-  `.clone().downcast::<T>()`, which the compiler confirms *does* exist
-  directly on `OwnedValue` (no `Value::from(...)` wrapper needed — that
-  was a guess from before there was a compiler to check it against).
-- `src/ui/grid_view.rs`: the video-thumbnail `notify` signal handler was
-  computed but never actually stored (`set_obj_data` for it was missing
-  entirely — a leftover half-edit), and the cleanup side was reading it
-  back as `Rc<SignalHandlerId>` while `.disconnect()` wants a plain
-  `SignalHandlerId`. Turns out `glib::SignalHandlerId` deliberately
-  doesn't implement `Clone` at all (to prevent double-disconnecting a
-  handler) — confirmed from its docs, not guessed — so wrapping it in
-  `Rc` to work around that was the wrong fix. Added `take_obj_data` to
-  `util.rs` (uses `ObjectExt::steal_data`, which hands back ownership
-  directly instead of cloning, so it works for non-`Clone` types), wired
-  the missing `set_obj_data` call back in, and used `take_obj_data` on
-  the read side instead of `Rc`.
+**`SaveFiles` (the one remaining unimplemented portal method)**
 
-**Warnings:**
-- One unused import (`gtk::glib::prelude::*` in `mime/applications.rs`)
-  -- `gio::prelude::*` already covers what it was added for. Removed.
-- ~70 warnings, all the same root cause: `gtk::Dialog` (and
-  `DialogBuilder`/`DialogExt::{add_button,content_area,connect_response}`)
-  is deprecated since GTK 4.10 -- flagged as out-of-scope by two earlier
-  sessions' CHANGES.md entries, but "fix the warnings" this time meant
-  actually doing it rather than deferring a third time. Per GTK's own
-  migration notes there's no drop-in replacement widget for a dialog
-  with custom content ("just create your own window and add buttons as
-  required"), so every dialog in the app (`ui/dialogs.rs`'s five,
-  `ui/trash_view.rs`'s one, `main.rs`'s two) is now a plain `gtk::Window`
-  built through a small shared scaffold (`dialogs::build_dialog` +
-  `dialogs::dialog_button`, now `pub(crate)` so `trash_view.rs`/`main.rs`
-  can reuse it too) instead of one Dialog-specific widget each. The two
-  that block synchronously on a nested `glib::MainLoop`
-  (`choose_conflict_policy`, `confirm_action`) needed a `responded` guard
-  added -- closing the window from a button handler also fires
-  `connect_close_request`, which would otherwise silently overwrite an
-  already-chosen answer with "cancelled."
+`org.freedesktop.portal.FileChooser`'s `SaveFiles` -- choosing one
+destination *folder* for a batch of already-named files -- previously
+returned `NotSupported`. It's now implemented:
 
-No compiler here either, so this was hand-verified against the exact
-error text/line numbers from the uploaded log rather than a fresh
-`cargo check` -- please run one more before merging, though this pass
-should be materially more reliable than earlier ones for exactly that
-reason: it's reacting to real compiler output instead of guessing at it.
+- Reads `current_folder` (`ay`) and `files` (`aay`) out of the options
+  dict via two new helpers, `option_path`/`option_path_list` in
+  `xdg_portal.rs`, following the same downcast pattern `option_bool`
+  already used for `directory`. Falls back to a single `"Untitled"`
+  entry if `files` comes through empty.
+- Added a `PortalRequest::SaveFiles` variant (`service.rs`) and a
+  matching GTK-thread arm (`main.rs`) that shows the same folder-picker
+  `OpenFolder` already uses, then joins the chosen folder with each
+  requested filename before replying -- so `begin_request`'s existing
+  `uris`-building code in `xdg_portal.rs` didn't need to change at all,
+  it just sees one path per input file like it already does for the
+  other three methods.
+- Also added `save_files` to the custom `org.mitos.FilePicker` interface
+  for parity with `open_file`/`save_file`/`open_folder`.
+
+**Re-theme: "Liquid Glass" + sci-fi**
+
+Rewrote `ui/theme.rs`'s CSS for both light and dark mode: translucent
+glass panels (toolbar/sidebar/status-bar/popovers) over a deep gradient
+window background, continuous rounded corners, a two-tone cyan/violet
+accent, and two `@keyframes` animations -- a breathing glow on the
+selected row and on the progress bar fill -- kept to just those two
+spots on purpose, since animating every row or the whole window
+background would cost real CPU/GPU for as long as the window's open,
+fighting the "faster, less memory" goal rather than serving it.
+
+Also fixed a real bug found while in here: the old `base_tokens()` put
+`mitos_radius` (`8px`), `mitos_font_family`, and `mitos_transition`
+through `@define-color`, which only ever registers a *color* -- so none
+of the three ever actually resolved, and every `border-radius:
+@mitos_radius` in both themes was silently falling back to GTK's
+default (square corners) the whole time. New version writes those as
+literal values instead of a broken token.
+
+Two things worth knowing before trusting how this looks:
+- `cargo check` won't catch a CSS mistake here even once it's clean --
+  GTK parses stylesheet content at runtime and silently skips whatever
+  it can't parse, no error surfaced either way. Actually launching the
+  app is the only real check.
+- `gridview`/`columnview`'s item CSS node name is my best recall, not
+  verified -- if the grid view's cards don't pick up the hover/selection
+  glass treatment, that's the first thing to check (see the comment
+  above `SHARED_CSS`).
+
+**Status bar selection count** (from last session's list) turned out to
+already exist -- `add_tab` already wires `selection.connect_selection_changed`
+to a separate `selection-label` showing "`N` selected · size" next to the
+main status label. Missed it last pass because it's set from `add_tab`,
+not `refresh_tab`, and stored under a different key (`selection-label`,
+not `status-label`). No change needed there.
 
 ## Earlier sessions
 
-- Closed the cross-volume trash gap: `list`/`restore`/`empty` now also
-  check `.Trash-$uid`/`.Trash/$uid` on other mounted volumes, not just
-  the home trash; added per-item permanent delete and a shown deletion
-  date.
+- Added real multi-window support ("New Window" now opens an actual
+  window instead of a placeholder); moved the D-Bus services and config
+  load into `main` so they run once per process, not once per window.
+- Fixed the first real `cargo check` output: 4 errors (two small
+  extraction-logic bugs in `xdg_portal.rs`, a signal-handler-storage bug
+  in `grid_view.rs` that needed a new `take_obj_data` util since
+  `glib::SignalHandlerId` deliberately isn't `Clone`) and ~70 warnings
+  (one unused import; the rest all `gtk::Dialog` deprecated-since-4.10 --
+  migrated every dialog in the app to a plain `gtk::Window` scaffold,
+  flagged out-of-scope by two earlier sessions before this one actually
+  did it).
+- Closed the cross-volume trash gap (checks other mounted volumes' own
+  trash cans, not just home), added per-item permanent delete and a
+  shown deletion date.
 - Added a Settings button to bulk-set mpv/Celluloid and GNOME Text
   Editor as defaults for common video/audio/text MIME types.
 - Fixed the status bar's free-space number (was directory-entry size,
