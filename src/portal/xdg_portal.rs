@@ -286,7 +286,6 @@ fn option_path(options: &HashMap<String, OwnedValue>, key: &str) -> Option<Strin
     Some(String::from_utf8_lossy(bytes_slice).into_owned())
 }
 
-
 /// Same idea as `option_path`, for the `aay` list of suggested filenames
 /// `SaveFiles` takes. Empty (rather than `None`) on a missing/wrong-typed
 /// key, since the caller already has a sensible fallback for "no names".
@@ -310,7 +309,6 @@ fn option_path_list(options: &HashMap<String, OwnedValue>, key: &str) -> Vec<Str
         })
         .collect()
 }
-
 
 fn path_to_file_uri(path: &str) -> String {
     gtk::gio::File::for_path(path).uri().to_string()
