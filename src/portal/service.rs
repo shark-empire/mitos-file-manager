@@ -15,6 +15,12 @@ pub enum PortalRequest {
         title: String,
         response_tx: mpsc::Sender<PortalResponse>,
     },
+    SaveFiles {
+        title: String,
+        current_folder: Option<String>,
+        files: Vec<String>,
+        response_tx: mpsc::Sender<PortalResponse>,
+    },
 }
 
 /// Responses sent from the GTK main thread back to the D-Bus portal thread.
@@ -93,6 +99,26 @@ fn run_dbus_service(
             self.request_tx
                 .send(PortalRequest::OpenFolder {
                     title: title.to_string(),
+                    response_tx,
+                })
+                .map_err(|e| zbus::fdo::Error::Failed(format!("Channel error: {}", e)))?;
+
+            match response_rx.recv() {
+                Ok(PortalResponse::Selected(paths)) => Ok(paths),
+                Ok(PortalResponse::Cancelled) => Ok(Vec::new()),
+                Ok(PortalResponse::Error(msg)) => Err(zbus::fdo::Error::Failed(msg)),
+                Err(e) => Err(zbus::fdo::Error::Failed(format!("Response error: {}", e))),
+            }
+        }
+
+        fn save_files(&self, title: &str, files: Vec<String>) -> zbus::fdo::Result<Vec<String>> {
+            let (response_tx, response_rx) = mpsc::channel();
+
+            self.request_tx
+                .send(PortalRequest::SaveFiles {
+                    title: title.to_string(),
+                    current_folder: None,
+                    files,
                     response_tx,
                 })
                 .map_err(|e| zbus::fdo::Error::Failed(format!("Channel error: {}", e)))?;
