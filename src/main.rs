@@ -2784,8 +2784,8 @@ fn build_ui(
                         let mut dialog_builder =
                             gtk::FileDialog::builder().title(&title).modal(true);
                         if let Some(folder) = &current_folder {
-                            dialog_builder = dialog_builder
-                                .initial_folder(&gtk::gio::File::for_path(folder));
+                            dialog_builder =
+                                dialog_builder.initial_folder(&gtk::gio::File::for_path(folder));
                         }
                         let dialog = dialog_builder.build();
                         let response_tx = response_tx.clone();
@@ -2801,9 +2801,8 @@ fn build_ui(
                                                 folder_path.join(name).display().to_string()
                                             })
                                             .collect();
-                                        let _ = response_tx.send(
-                                            portal::service::PortalResponse::Selected(paths),
-                                        );
+                                        let _ = response_tx
+                                            .send(portal::service::PortalResponse::Selected(paths));
                                     }
                                     None => {
                                         let _ = response_tx
