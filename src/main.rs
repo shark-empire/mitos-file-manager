@@ -98,7 +98,24 @@ fn main() {
         .build();
 
     app.connect_activate(move |app| {
-        build_ui(app, &args);
+        // Everything here runs once per process, before the first
+        // window: settings are loaded from disk (a second `build_ui`
+        // call, e.g. from "New Window", reads the already-loaded values
+        // instead of re-reading the file, so it reflects whatever's
+        // currently live rather than resetting anything the user just
+        // changed), and both D-Bus services claim a well-known bus name
+        // each -- starting either twice would have the second attempt
+        // fail to claim an already-owned name.
+        config::settings::load();
+        VIEW_MODE_LIST.store(
+            config::settings::default_view() == "list",
+            Ordering::Relaxed,
+        );
+
+        let portal_rx = portal::service::start();
+        let desktop_rx = desktop::service::start();
+
+        build_ui(app, &args, Some(portal_rx), Some(desktop_rx));
     });
 
     let _ = app.run();
@@ -1093,13 +1110,13 @@ fn add_tab(
     update_watcher(notebook, watcher_manager);
 }
 
-fn build_ui(app: &Application, initial_args: &[String]) {
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title("MITOS Files")
-        .default_width(1100)
-        .default_height(720)
-        .build();
+fn build_ui(
+    app: &Application,
+    initial_args: &[String],
+    portal_rx: Option<std::sync::mpsc::Receiver<portal::service::PortalRequest>>,
+    desktop_rx: Option<std::sync::mpsc::Receiver<desktop::service::DesktopRequest>>,
+) {
+    let window = ui::window::create_window(app, "MITOS Files");
 
     ui::accessibility::setup_widget_accessibility(&window);
 
@@ -1111,15 +1128,12 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
     let ctx = Rc::new(RefCell::new(AppContext::new()));
 
-    // After loading settings
-    config::settings::load();
-    // Seed the session view-mode toggle from the persisted default so a
-    // fresh window opens in whichever of grid/list the user last chose in
-    // Settings, instead of always starting in grid view.
-    VIEW_MODE_LIST.store(
-        config::settings::default_view() == "list",
-        Ordering::Relaxed,
-    );
+    // Settings are loaded once for the whole process, before the first
+    // window is built (see `main`) -- re-loading here on every window
+    // would reset anything the user changed at runtime (e.g. toggling
+    // List view) back to whatever's on disk. `VIEW_MODE_LIST` etc. are
+    // read fresh below regardless, so a new window still reflects
+    // whatever the current live state is.
 
     // Start config watcher
     let (config_tx, config_rx) = async_channel::unbounded();
@@ -1127,9 +1141,6 @@ fn build_ui(app: &Application, initial_args: &[String]) {
 
     let theme_mode = config::settings::theme_mode();
     ui::theme::apply_theme(&WidgetExt::display(&window), theme_mode);
-
-    let portal_rx = portal::service::start();
-    let desktop_rx = desktop::service::start();
 
     // Setup Inotify Channel
     let (sender, receiver) = async_channel::unbounded();
@@ -1998,14 +2009,11 @@ fn build_ui(app: &Application, initial_args: &[String]) {
     {
         let app = app.clone();
         new_window_btn.connect_clicked(move |_| {
-            let window = ui::window::create_window(&app, "MITOS Files");
-            let label = gtk::Label::new(Some(
-                "New window opened.\nFull multi-window file manager\nrequires duplicating the tab/notebook setup.\nThis is a placeholder window.",
-            ));
-            label.set_wrap(true);
-            label.set_justify(gtk::Justification::Center);
-            window.set_child(Some(&label));
-            window.present();
+            // No portal/desktop receivers -- those D-Bus services are
+            // started once per process (see `main`) and already owned by
+            // the first window; a second `Some` here would mean two
+            // windows both polling the same already-drained channel.
+            build_ui(&app, &[], None, None);
         });
     }
 
@@ -2675,8 +2683,10 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         monitor.connect_volume_removed(move |_, _| rebuild_vol_rem(None));
     }
 
-    // Portal Receiver
-    {
+    // Portal Receiver -- only set up for the window that owns it (see
+    // `main`); a window opened via "New Window" gets `None` here, since
+    // the D-Bus service itself is only started once per process.
+    if let Some(portal_rx) = portal_rx {
         let window = window.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(100), move || loop {
             match portal_rx.try_recv() {
@@ -2767,8 +2777,9 @@ fn build_ui(app: &Application, initial_args: &[String]) {
         });
     }
 
-    // Desktop Receiver
-    {
+    // Desktop Receiver -- same one-owner-per-process reasoning as the
+    // portal receiver above.
+    if let Some(desktop_rx) = desktop_rx {
         glib::timeout_add_local(std::time::Duration::from_millis(100), move || loop {
             match desktop_rx.try_recv() {
                 Ok(request) => match request {
