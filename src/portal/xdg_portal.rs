@@ -280,10 +280,12 @@ fn option_bool(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
 /// actually a byte array, same permissive-fallback shape as `option_bool`.
 fn option_path(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     let value = options.get(key)?;
-    let bytes = <Vec<u8>>::try_from((*value).clone()).ok()?;
+    let cloned_val = value.try_clone().ok()?;
+    let bytes = <Vec<u8>>::try_from(cloned_val).ok()?;
     let bytes_slice = bytes.strip_suffix(&[0u8]).unwrap_or(bytes.as_slice());
     Some(String::from_utf8_lossy(bytes_slice).into_owned())
 }
+
 
 /// Same idea as `option_path`, for the `aay` list of suggested filenames
 /// `SaveFiles` takes. Empty (rather than `None`) on a missing/wrong-typed
@@ -293,7 +295,11 @@ fn option_path_list(options: &HashMap<String, OwnedValue>, key: &str) -> Vec<Str
         return Vec::new();
     };
 
-    let Ok(list) = <Vec<Vec<u8>>>::try_from((*value).clone()) else {
+    let Some(cloned_val) = value.try_clone().ok() else {
+        return Vec::new();
+    };
+
+    let Ok(list) = <Vec<Vec<u8>>>::try_from(cloned_val) else {
         return Vec::new();
     };
 
@@ -304,6 +310,7 @@ fn option_path_list(options: &HashMap<String, OwnedValue>, key: &str) -> Vec<Str
         })
         .collect()
 }
+
 
 fn path_to_file_uri(path: &str) -> String {
     gtk::gio::File::for_path(path).uri().to_string()
