@@ -2768,6 +2768,55 @@ fn build_ui(
                             },
                         );
                     }
+                    portal::service::PortalRequest::SaveFiles {
+                        title,
+                        current_folder,
+                        files,
+                        response_tx,
+                    } => {
+                        // Same folder-picker as OpenFolder above; the part
+                        // that's actually specific to SaveFiles is what
+                        // happens once a folder comes back -- joining it
+                        // with each requested filename so the generic
+                        // `uris`-building code in xdg_portal.rs's
+                        // `begin_request` (unchanged) has one path per
+                        // input file to work with, not just the folder.
+                        let mut dialog_builder =
+                            gtk::FileDialog::builder().title(&title).modal(true);
+                        if let Some(folder) = &current_folder {
+                            dialog_builder = dialog_builder
+                                .initial_folder(&gtk::gio::File::for_path(folder));
+                        }
+                        let dialog = dialog_builder.build();
+                        let response_tx = response_tx.clone();
+                        dialog.select_folder(
+                            Some(&window),
+                            None::<&gtk::gio::Cancellable>,
+                            move |result| match result {
+                                Ok(folder) => match folder.path() {
+                                    Some(folder_path) => {
+                                        let paths = files
+                                            .iter()
+                                            .map(|name| {
+                                                folder_path.join(name).display().to_string()
+                                            })
+                                            .collect();
+                                        let _ = response_tx.send(
+                                            portal::service::PortalResponse::Selected(paths),
+                                        );
+                                    }
+                                    None => {
+                                        let _ = response_tx
+                                            .send(portal::service::PortalResponse::Cancelled);
+                                    }
+                                },
+                                Err(_) => {
+                                    let _ = response_tx
+                                        .send(portal::service::PortalResponse::Cancelled);
+                                }
+                            },
+                        );
+                    }
                 },
                 Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
