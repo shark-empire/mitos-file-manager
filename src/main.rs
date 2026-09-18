@@ -2768,7 +2768,7 @@ fn build_ui(
                             },
                         );
                     }
-                    portal::service::PortalRequest::SaveFile {
+                    portal::service::PortalRequest::SaveFiles {
                         title,
                         current_folder,
                         files,
