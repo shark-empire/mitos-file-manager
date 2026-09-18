@@ -29,13 +29,20 @@
 //!   compute the path itself, but honoring that isn't required for
 //!   correctness -- only for a client-side optimization we don't need.
 //! - `SaveFiles` (choose a target *folder* for several already-named
-//!   files) isn't implemented -- it returns `NotSupported`, which is a
-//!   valid response for an optional portal method. `OpenFile`/`SaveFile`
-//!   (by far the common cases) are fully implemented.
+//!   files) is now implemented: it shows a folder picker, then joins the
+//!   chosen folder with each name from the `files` option to build the
+//!   result `uris`, one per input file. If `files` comes through empty,
+//!   it falls back to a single "Untitled" entry rather than returning a
+//!   folder with nothing in it.
 //! - Reading `directory` / `multiple` out of the `options` dict uses
 //!   zvariant's `Value`/`OwnedValue` conversions as best-recalled without
 //!   a compiler to check against; if `cargo check` flags `option_bool`
-//!   below, that's the one function to look at first.
+//!   below, that's the one function to look at first. `SaveFiles`'s
+//!   `current_folder` (`ay`) / `files` (`aay`) reads -- `option_path` and
+//!   `option_path_list` below -- carry the exact same caveat: byte
+//!   arrays downcasting to `Vec<u8>` / `Vec<Vec<u8>>` is my best recall
+//!   of how zvariant represents them, not something this pass could
+//!   verify.
 
 use gtk::gio::prelude::FileExt;
 use std::collections::HashMap;
@@ -113,7 +120,7 @@ impl FileChooserPortal {
     ) -> zbus::fdo::Result<OwnedObjectPath> {
         let default_name = options
             .get("current_name")
-            .and_then(|v| String::try_from(&**v).ok())
+            .and_then(|v| <&str>::try_from(&**v).ok().map(String::from))
             .unwrap_or_else(|| "Untitled".to_string());
 
         let title = title.to_string();
@@ -132,18 +139,35 @@ impl FileChooserPortal {
     fn save_files(
         &self,
         _parent_window: &str,
-        _title: &str,
-        _options: HashMap<String, OwnedValue>,
+        title: &str,
+        options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<OwnedObjectPath> {
-        // Choosing a destination *folder* for a batch of already-named
-        // files is a distinct enough flow (no single dialog in MITOS
-        // Files maps onto it today) that guessing at it felt worse than
-        // just not claiming to support it yet -- see the module doc
-        // comment. Portal clients are expected to handle a backend not
-        // implementing every optional method.
-        Err(zbus::fdo::Error::NotSupported(
-            "SaveFiles is not implemented yet".into(),
-        ))
+        let current_folder = option_path(&options, "current_folder");
+        let files = option_path_list(&options, "files");
+        let files = if files.is_empty() {
+            vec!["Untitled".to_string()]
+        } else {
+            files
+        };
+
+        let title = title.to_string();
+        let request_tx = self.request_tx.clone();
+
+        // The actual folder-picking + folder/filename joining happens on
+        // the GTK thread (see the `PortalRequest::SaveFiles` arm in
+        // main.rs) so it can send back a plain `Vec<String>` of already-
+        // joined target paths -- `begin_request`'s response handling
+        // below then turns each of those into a `uris` entry exactly the
+        // same way it already does for OpenFile/SaveFile/OpenFolder,
+        // with no changes needed there.
+        self.begin_request(move |response_tx| {
+            let _ = request_tx.send(PortalRequest::SaveFiles {
+                title,
+                current_folder,
+                files,
+                response_tx,
+            });
+        })
     }
 }
 
@@ -247,7 +271,38 @@ fn option_bool(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
         return false;
     };
 
-    bool::try_from(value).unwrap_or(false)
+    bool::try_from(&**value).unwrap_or(false)
+}
+
+/// Reads a `ay` (byte-array) option as a path/string -- the D-Bus
+/// convention portals use for filesystem paths, since paths aren't
+/// guaranteed valid UTF-8. `None` on a missing key or a value that isn't
+/// actually a byte array, same permissive-fallback shape as `option_bool`.
+fn option_path(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    let value = options.get(key)?;
+    let bytes = <Vec<u8>>::try_from((*value).clone()).ok()?;
+    let bytes_slice = bytes.strip_suffix(&[0u8]).unwrap_or(bytes.as_slice());
+    Some(String::from_utf8_lossy(bytes_slice).into_owned())
+}
+
+/// Same idea as `option_path`, for the `aay` list of suggested filenames
+/// `SaveFiles` takes. Empty (rather than `None`) on a missing/wrong-typed
+/// key, since the caller already has a sensible fallback for "no names".
+fn option_path_list(options: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
+    let Some(value) = options.get(key) else {
+        return Vec::new();
+    };
+
+    let Ok(list) = <Vec<Vec<u8>>>::try_from((*value).clone()) else {
+        return Vec::new();
+    };
+
+    list.into_iter()
+        .map(|bytes| {
+            let bytes_slice = bytes.strip_suffix(&[0u8]).unwrap_or(bytes.as_slice());
+            String::from_utf8_lossy(bytes_slice).into_owned()
+        })
+        .collect()
 }
 
 fn path_to_file_uri(path: &str) -> String {
