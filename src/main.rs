@@ -344,9 +344,7 @@ fn portal_reply(result: Result<gio::File, glib::Error>) -> portal::service::Port
             // with no FUSE mount, say). A caller expecting a filesystem
             // path can't do anything with an empty string, so report the
             // failure instead of pretending a selection was made.
-            None => PortalResponse::Error(
-                "The selected location has no local path".to_string(),
-            ),
+            None => PortalResponse::Error("The selected location has no local path".to_string()),
         },
         // Dismissed, or closed without choosing anything.
         Err(_) => PortalResponse::Cancelled,
@@ -2029,16 +2027,16 @@ fn build_ui(
 
             // Entry 0 of the dropdown is "All types"; entry N is
             // `FileTypeFilter::all()[N - 1]`.
-            let file_types: Vec<search::filters::FileTypeFilter> =
-                (search_type_dropdown.selected() as usize)
-                    .checked_sub(1)
-                    .and_then(|index| {
-                        search::filters::FileTypeFilter::all()
-                            .into_iter()
-                            .nth(index)
-                    })
-                    .into_iter()
-                    .collect();
+            let file_types: Vec<search::filters::FileTypeFilter> = (search_type_dropdown.selected()
+                as usize)
+                .checked_sub(1)
+                .and_then(|index| {
+                    search::filters::FileTypeFilter::all()
+                        .into_iter()
+                        .nth(index)
+                })
+                .into_iter()
+                .collect();
 
             // Nothing typed and no type chosen: back to the plain folder view.
             if query.is_empty() && file_types.is_empty() {
@@ -2112,9 +2110,8 @@ fn build_ui(
 
             let location_entry = location_entry.clone();
 
-            glib::timeout_add_local(
-                std::time::Duration::from_millis(50),
-                move || match rx.try_recv() {
+            glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                match rx.try_recv() {
                     Ok(results) => {
                         // The tab may have moved to another folder while the
                         // search ran; results for the old one would replace
@@ -2158,8 +2155,8 @@ fn build_ui(
                     // search cancelled it, and that one owns the grid now.
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
                     Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                },
-            );
+                }
+            });
         });
     }
 
