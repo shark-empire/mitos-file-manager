@@ -49,8 +49,12 @@ mod tests {
     fn a_conclusive_extension_is_answered_without_touching_the_file() {
         // These paths don't exist: if the name alone weren't enough, the
         // sniffing fallback would come back as octet-stream.
-        assert!(guess_mime_by_name(Path::new("/no/such/photo.png"), "photo.png").starts_with("image/"));
-        assert!(guess_mime_by_name(Path::new("/no/such/notes.txt"), "notes.txt").starts_with("text/"));
+        assert!(
+            guess_mime_by_name(Path::new("/no/such/photo.png"), "photo.png").starts_with("image/")
+        );
+        assert!(
+            guess_mime_by_name(Path::new("/no/such/notes.txt"), "notes.txt").starts_with("text/")
+        );
     }
 
     #[test]
