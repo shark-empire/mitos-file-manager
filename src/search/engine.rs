@@ -198,7 +198,10 @@ fn file_contains(path: &Path, needle: &[u8], cancel: &AtomicBool) -> bool {
         let mut window = std::mem::take(&mut carry);
         window.extend(chunk[..read].iter().map(|byte| byte.to_ascii_lowercase()));
 
-        if window.windows(needle.len()).any(|candidate| candidate == needle) {
+        if window
+            .windows(needle.len())
+            .any(|candidate| candidate == needle)
+        {
             return true;
         }
 
@@ -237,7 +240,11 @@ mod tests {
         fs::write(root.join("photo.png"), "not really a png").unwrap();
         fs::create_dir(root.join("sub")).unwrap();
         fs::write(root.join("sub").join("deep.txt"), "more milk here").unwrap();
-        fs::write(root.join("sub").join(".secret.txt"), "milk in a hidden file").unwrap();
+        fs::write(
+            root.join("sub").join(".secret.txt"),
+            "milk in a hidden file",
+        )
+        .unwrap();
         std::os::unix::fs::symlink(&root, root.join("sub").join("loop")).unwrap();
 
         root
@@ -289,7 +296,10 @@ mod tests {
 
         filters.include_hidden = true;
         let results = search_tree(&root, &filters, &AtomicBool::new(false));
-        assert_eq!(names(&results), vec![".secret.txt", "deep.txt", "notes.txt"]);
+        assert_eq!(
+            names(&results),
+            vec![".secret.txt", "deep.txt", "notes.txt"]
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
