@@ -136,8 +136,42 @@ pub fn start_paste_job(
                 .filter(|task| task.action != ConflictAction::Skip && task.source.exists())
                 .collect();
 
+            // A move deletes the originals: refuse protected ones up front,
+            // before anything has been touched.
+            if matches!(operation, PendingOp::Move) {
+                let sources: Vec<PathBuf> = active_tasks
+                    .iter()
+                    .map(|task| task.source.clone())
+                    .collect();
+
+                crate::filesystem::protection::ensure_modifiable(&sources)
+                    .map_err(|err| err.to_string())?;
+            }
+
             let total =
                 calculate_size_for_tasks(&active_tasks, &cancel).map_err(|err| err.to_string())?;
+
+            // Refuse a copy that can't fit before it has filled the disk and
+            // died half-way. (A move within one filesystem is a rename and
+            // needs no space, so only copies are checked.) Files that will
+            // be *replaced* free their old space first, so it's discounted.
+            if matches!(operation, PendingOp::Copy) {
+                if let Some(directory) = active_tasks
+                    .first()
+                    .and_then(|task| task.destination.parent())
+                {
+                    let replaced: u64 = active_tasks
+                        .iter()
+                        .filter(|task| task.action == ConflictAction::Replace)
+                        .map(|task| path_size(&task.destination, &cancel).unwrap_or(0))
+                        .sum();
+
+                    crate::filesystem::metadata::ensure_free_space(
+                        directory,
+                        total.saturating_sub(replaced),
+                    )?;
+                }
+            }
 
             let _ = sender.send_blocking(JobMessage::Started {
                 label: label.clone(),
@@ -253,6 +287,113 @@ pub fn start_trash_job(paths: Vec<PathBuf>, sender: Sender<JobMessage>) -> JobHa
     });
 
     handle
+}
+
+/// Permanently delete `paths` -- no trash, no undo. Directories are removed
+/// bottom-up entry by entry (so the progress bar and Cancel button work on
+/// huge trees), and symlinks are removed as links: what they point at is
+/// never followed, so deleting a folder that contains a link to somewhere
+/// else can't reach outside it.
+pub fn start_delete_job(paths: Vec<PathBuf>, sender: Sender<JobMessage>) -> JobHandle {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let pause = Arc::new(AtomicBool::new(false));
+
+    let handle = JobHandle {
+        cancel: cancel.clone(),
+        pause: pause.clone(),
+    };
+
+    thread::spawn(move || {
+        let result = (|| -> Result<usize, String> {
+            // The UI checks this too, but this is the code that actually
+            // destroys data, so it doesn't rely on its callers.
+            crate::filesystem::protection::ensure_modifiable(&paths)
+                .map_err(|err| err.to_string())?;
+
+            let total = count_entries(&paths, &cancel).map_err(|err| err.to_string())?;
+
+            let _ = sender.send_blocking(JobMessage::Started {
+                label: "Deleting".to_string(),
+                total,
+                bytes: false,
+            });
+
+            let mut state = ProgressState::new(
+                sender.clone(),
+                cancel.clone(),
+                pause.clone(),
+                "Deleting".to_string(),
+                total,
+                false,
+            );
+
+            let mut completed = 0;
+
+            for path in &paths {
+                delete_entry(path, &mut state).map_err(|err| err.to_string())?;
+                completed += 1;
+            }
+
+            state.set(total);
+
+            Ok(completed)
+        })();
+
+        let _ = sender.send_blocking(JobMessage::Finished { result });
+    });
+
+    handle
+}
+
+/// How many files and folders (each counted once) are under `paths`,
+/// including the paths themselves. Symlinks count as one and are not entered.
+fn count_entries(paths: &[PathBuf], cancel: &AtomicBool) -> io::Result<u64> {
+    let mut total = 0;
+
+    for path in paths {
+        total += count_one(path, cancel)?;
+    }
+
+    Ok(total)
+}
+
+fn count_one(path: &Path, cancel: &AtomicBool) -> io::Result<u64> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
+    }
+
+    let metadata = fs::symlink_metadata(path)?;
+    let mut count = 1;
+
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            count += count_one(&entry?.path(), cancel)?;
+        }
+    }
+
+    Ok(count)
+}
+
+fn delete_entry(path: &Path, state: &mut ProgressState) -> io::Result<()> {
+    check_cancel_and_pause(&state.cancel, &state.pause)?;
+
+    // `symlink_metadata`: a link to a folder reports "not a directory" here,
+    // so it is unlinked below instead of being emptied.
+    let metadata = fs::symlink_metadata(path)?;
+
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            delete_entry(&entry?.path(), state)?;
+        }
+
+        fs::remove_dir(path)?;
+    } else {
+        fs::remove_file(path)?;
+    }
+
+    state.add(1);
+
+    Ok(())
 }
 
 fn check_cancel_and_pause(cancel: &AtomicBool, pause: &AtomicBool) -> io::Result<()> {
@@ -414,6 +555,14 @@ fn copy_file_chunks(
     writer.flush()?;
 
     if let Ok(metadata) = fs::metadata(source) {
+        // Keep the original's modification time (like `cp -p`) -- otherwise
+        // every copy looks brand new and date-sorted views lose their
+        // meaning. Done while the file is still open for writing, before
+        // the permissions possibly make it read-only.
+        if let Ok(modified) = metadata.modified() {
+            let _ = writer.set_modified(modified);
+        }
+
         let _ = fs::set_permissions(destination, metadata.permissions());
     }
 
@@ -462,5 +611,70 @@ fn remove_all_with_progress(path: &Path, state: &mut ProgressState) -> io::Resul
         fs::remove_dir(path)
     } else {
         fs::remove_file(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::test_support::scratch_dir;
+
+    /// Run a delete job to completion and return its result.
+    fn run_delete(paths: Vec<PathBuf>) -> Result<usize, String> {
+        let (sender, receiver) = async_channel::unbounded();
+        let _handle = start_delete_job(paths, sender);
+
+        loop {
+            match receiver.recv_blocking() {
+                Ok(JobMessage::Finished { result }) => return result,
+                Ok(_) => continue,
+                Err(_) => return Err("job ended without a result".to_string()),
+            }
+        }
+    }
+
+    #[test]
+    fn delete_removes_a_tree_but_never_follows_a_symlink_out_of_it() {
+        let root = scratch_dir("delete-tree");
+
+        let outside = root.join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), "must survive").unwrap();
+
+        let tree = root.join("tree");
+        fs::create_dir_all(tree.join("a").join("b")).unwrap();
+        fs::write(tree.join("a").join("b").join("file.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("link-out")).unwrap();
+
+        assert_eq!(run_delete(vec![tree.clone()]), Ok(1));
+
+        assert!(!tree.exists());
+        assert!(outside.join("keep.txt").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_refuses_protected_paths_before_touching_anything() {
+        let err = run_delete(vec![PathBuf::from("/usr")]).unwrap_err();
+
+        assert!(err.contains("protected"), "unexpected message: {err}");
+        assert!(Path::new("/usr").exists());
+    }
+
+    #[test]
+    fn delete_counts_every_file_and_folder_once() {
+        let root = scratch_dir("delete-count");
+        fs::create_dir_all(root.join("d").join("e")).unwrap();
+        fs::write(root.join("d").join("one"), "1").unwrap();
+        fs::write(root.join("d").join("e").join("two"), "2").unwrap();
+
+        // d, d/one, d/e, d/e/two
+        assert_eq!(
+            count_entries(&[root.join("d")], &AtomicBool::new(false)).unwrap(),
+            4
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

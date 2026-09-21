@@ -2,6 +2,8 @@ use crate::operations::jobs::{JobHandle, JobMessage};
 use crate::operations::unique_destination;
 use async_channel::Sender;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -9,24 +11,54 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use tar::Archive;
+use tar::{Archive, Builder};
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
-pub fn is_supported_archive(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
+/// Formats this app reads itself, with no help from anything installed.
+const NATIVE_SUFFIXES: &[&str] = &[".zip", ".tar", ".tar.gz", ".tgz"];
 
-    name.ends_with(".zip")
-        || name.ends_with(".tar")
-        || name.ends_with(".tar.gz")
-        || name.ends_with(".tgz")
+/// Formats handed to an external extractor (`bsdtar` or `7z`), if one is
+/// installed. Reading these natively would mean more dependencies for
+/// formats most people rarely open.
+const EXTERNAL_SUFFIXES: &[&str] = &[
+    ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar.zst", ".tzst", ".7z", ".rar",
+];
+
+fn lowercase_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
 }
 
-pub fn default_archive_path(destination_dir: &Path) -> PathBuf {
-    unique_destination(&destination_dir.join("Archive.zip"))
+/// Can "Extract Here" do something with this file?
+pub fn is_supported_archive(path: &Path) -> bool {
+    let name = lowercase_name(path);
+
+    NATIVE_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+        || (EXTERNAL_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+            && external_extractor().is_some())
+}
+
+/// A name for a new archive of `sources` inside `destination_dir`: after the
+/// item itself when there's just one ("Photos.zip"), "Archive.zip"
+/// otherwise -- never colliding with an existing file. `extension` has no
+/// leading dot ("zip", "tar.gz").
+pub fn default_archive_path(
+    destination_dir: &Path,
+    sources: &[PathBuf],
+    extension: &str,
+) -> PathBuf {
+    let base = match sources {
+        [only] => only
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Archive".to_string()),
+        _ => "Archive".to_string(),
+    };
+
+    unique_destination(&destination_dir.join(format!("{base}.{extension}")))
 }
 
 pub fn default_extract_dir(destination_dir: &Path, archive_path: &Path) -> PathBuf {
@@ -40,21 +72,16 @@ pub fn default_extract_dir(destination_dir: &Path, archive_path: &Path) -> PathB
     unique_destination(&destination_dir.join(folder_name))
 }
 
+/// "photos.tar.gz" -> "photos": the name of the folder to extract into.
 fn archive_folder_name(name: &str) -> String {
-    if let Some(stripped) = name.strip_suffix(".tar.gz") {
-        return stripped.to_string();
-    }
+    let lower = name.to_lowercase();
 
-    if let Some(stripped) = name.strip_suffix(".tgz") {
-        return stripped.to_string();
-    }
-
-    if let Some(stripped) = name.strip_suffix(".zip") {
-        return stripped.to_string();
-    }
-
-    if let Some(stripped) = name.strip_suffix(".tar") {
-        return stripped.to_string();
+    for suffix in NATIVE_SUFFIXES.iter().chain(EXTERNAL_SUFFIXES) {
+        // The suffixes are ASCII and `to_lowercase` keeps ASCII lengths, so
+        // the cut point is the same in both spellings.
+        if lower.ends_with(suffix) && name.len() > suffix.len() && lower.len() == name.len() {
+            return name[..name.len() - suffix.len()].to_string();
+        }
     }
 
     "Extracted".to_string()
@@ -126,10 +153,128 @@ pub fn start_compress_zip_job(
             Ok(completed)
         })();
 
+        // A cancelled or failed compression must not leave a truncated,
+        // corrupt .zip behind that looks like a real archive.
+        if result.is_err() {
+            let _ = fs::remove_file(&archive_path);
+        }
+
         let _ = sender.send_blocking(JobMessage::Finished { result });
     });
 
     handle
+}
+
+/// Compress `sources` into a gzip-compressed tar archive. Symlinks are
+/// stored as links (not followed), and permissions and timestamps travel
+/// with the files -- which plain ZIPs handle poorly.
+pub fn start_compress_tar_gz_job(
+    sources: Vec<PathBuf>,
+    archive_path: PathBuf,
+    sender: Sender<JobMessage>,
+) -> JobHandle {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let pause = Arc::new(AtomicBool::new(false));
+
+    let handle = JobHandle {
+        cancel: cancel.clone(),
+        pause: pause.clone(),
+    };
+
+    thread::spawn(move || {
+        let result = (|| -> Result<usize, String> {
+            let total = calculate_total_size(&sources, &cancel).map_err(|err| err.to_string())?;
+
+            let _ = sender.send_blocking(JobMessage::Started {
+                label: "Compressing".to_string(),
+                total,
+                bytes: true,
+            });
+
+            let mut progress = ArchiveProgress::new(
+                sender.clone(),
+                cancel.clone(),
+                pause.clone(),
+                "Compressing".to_string(),
+                total,
+                true,
+            );
+
+            if let Some(parent) = archive_path.parent() {
+                fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            }
+
+            let file = fs::File::create(&archive_path).map_err(|err| err.to_string())?;
+            let mut builder = Builder::new(GzEncoder::new(file, Compression::default()));
+            builder.follow_symlinks(false);
+
+            let mut completed = 0usize;
+
+            for source in &sources {
+                check_cancel_and_pause(&cancel, &pause).map_err(|err| err.to_string())?;
+
+                if fs::symlink_metadata(source).is_err() {
+                    continue;
+                }
+
+                let Some(name) = source.file_name() else {
+                    continue;
+                };
+
+                add_path_to_tar(&mut builder, source, Path::new(name), &mut progress)
+                    .map_err(|err| err.to_string())?;
+
+                completed += 1;
+            }
+
+            // `into_inner` writes the tar trailer; `finish` flushes gzip.
+            builder
+                .into_inner()
+                .and_then(|encoder| encoder.finish())
+                .map_err(|err| err.to_string())?;
+
+            progress.set(total);
+
+            Ok(completed)
+        })();
+
+        if result.is_err() {
+            let _ = fs::remove_file(&archive_path);
+        }
+
+        let _ = sender.send_blocking(JobMessage::Finished { result });
+    });
+
+    handle
+}
+
+fn add_path_to_tar<W: Write>(
+    builder: &mut Builder<W>,
+    source: &Path,
+    name_in_archive: &Path,
+    progress: &mut ArchiveProgress,
+) -> io::Result<()> {
+    check_cancel_and_pause(&progress.cancel, &progress.pause)?;
+
+    let metadata = fs::symlink_metadata(source)?;
+
+    if metadata.is_dir() {
+        builder.append_dir(name_in_archive, source)?;
+
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let child_name = name_in_archive.join(entry.file_name());
+
+            add_path_to_tar(builder, &entry.path(), &child_name, progress)?;
+        }
+    } else {
+        // Symlinks are stored as symlinks (`follow_symlinks(false)`); regular
+        // files are streamed from disk, not read into memory.
+        builder.append_path_with_name(source, name_in_archive)?;
+        progress.add(metadata.len());
+    }
+
+    Ok(())
 }
 
 pub fn start_extract_job(
@@ -146,6 +291,10 @@ pub fn start_extract_job(
     };
 
     thread::spawn(move || {
+        // Whether `destination_dir` is ours to clean up if this fails: only
+        // if it didn't exist before.
+        let created_destination = !destination_dir.exists();
+
         let result = (|| -> Result<usize, String> {
             fs::create_dir_all(&destination_dir).map_err(|err| err.to_string())?;
 
@@ -178,10 +327,31 @@ pub fn start_extract_job(
                     cancel,
                     pause,
                 )
+            } else if EXTERNAL_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) {
+                match external_extractor() {
+                    Some(tool) => extract_external(
+                        &tool,
+                        &archive_path,
+                        &destination_dir,
+                        sender.clone(),
+                        &cancel,
+                    ),
+                    None => Err(
+                        "Extracting this kind of archive needs bsdtar or 7z, and neither is installed"
+                            .to_string(),
+                    ),
+                }
             } else {
                 Err("Unsupported archive type".to_string())
             }
         })();
+
+        // An extraction that failed part-way must not leave a folder full of
+        // half-written files. (Only ever removes a folder this job created;
+        // a cancelled extraction counts as failed.)
+        if result.is_err() && created_destination {
+            let _ = fs::remove_dir_all(&destination_dir);
+        }
 
         let _ = sender.send_blocking(JobMessage::Finished { result });
     });
@@ -368,6 +538,8 @@ fn extract_zip(
         total += file.size();
     }
 
+    crate::filesystem::metadata::ensure_free_space(destination_dir, total)?;
+
     let _ = sender.send_blocking(JobMessage::Started {
         label: "Extracting".to_string(),
         total,
@@ -432,7 +604,10 @@ fn extract_zip(
         {
             if let Some(mode) = file.unix_mode() {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&outpath, fs::Permissions::from_mode(mode));
+
+                // Only the rwx bits: an archive must not be able to hand out
+                // files with the setuid / setgid / sticky bit already set.
+                let _ = fs::set_permissions(&outpath, fs::Permissions::from_mode(mode & 0o777));
             }
         }
 
@@ -509,4 +684,361 @@ fn extract_tar_reader<R: Read>(
     }
 
     Ok(completed)
+}
+
+// ---------------------------------------------------------------------------
+// External extractors
+// ---------------------------------------------------------------------------
+
+enum ExternalTool {
+    /// libarchive's `bsdtar`: reads tar.xz / tar.bz2 / tar.zst / 7z / rar ...
+    Bsdtar(PathBuf),
+    /// 7-Zip (`7zz`, `7z` or `7za`).
+    SevenZip(PathBuf),
+}
+
+impl ExternalTool {
+    fn name(&self) -> &'static str {
+        match self {
+            ExternalTool::Bsdtar(_) => "bsdtar",
+            ExternalTool::SevenZip(_) => "7z",
+        }
+    }
+
+    fn command(&self, archive_path: &Path, destination_dir: &Path) -> std::process::Command {
+        match self {
+            ExternalTool::Bsdtar(program) => {
+                // bsdtar refuses absolute paths and ".." components by default.
+                let mut command = std::process::Command::new(program);
+                command
+                    .arg("-x")
+                    .arg("-f")
+                    .arg(archive_path)
+                    .arg("-C")
+                    .arg(destination_dir);
+                command
+            }
+            ExternalTool::SevenZip(program) => {
+                let mut command = std::process::Command::new(program);
+                command
+                    .arg("x")
+                    .arg("-y")
+                    .arg(format!("-o{}", destination_dir.display()))
+                    .arg(archive_path);
+                command
+            }
+        }
+    }
+}
+
+fn find_in_path(program: &str) -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+fn external_extractor() -> Option<ExternalTool> {
+    if let Some(path) = find_in_path("bsdtar") {
+        return Some(ExternalTool::Bsdtar(path));
+    }
+
+    ["7zz", "7z", "7za"]
+        .iter()
+        .find_map(|name| find_in_path(name))
+        .map(ExternalTool::SevenZip)
+}
+
+fn extract_external(
+    tool: &ExternalTool,
+    archive_path: &Path,
+    destination_dir: &Path,
+    sender: Sender<JobMessage>,
+    cancel: &AtomicBool,
+) -> Result<usize, String> {
+    let _ = sender.send_blocking(JobMessage::Started {
+        label: "Extracting".to_string(),
+        total: 0,
+        bytes: false,
+    });
+
+    let mut command = tool.command(archive_path, destination_dir);
+
+    // Nothing to read from us, and nothing worth capturing: an unread pipe
+    // that fills up would stall the tool.
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Couldn't start {}: {err}", tool.name()))?;
+
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Cancelled".to_string());
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(1),
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "{} could not extract this archive ({status})",
+                    tool.name()
+                ))
+            }
+            Ok(None) => {
+                // Unknown total: keep the progress bar pulsing.
+                let _ = sender.send_blocking(JobMessage::Progress {
+                    label: "Extracting".to_string(),
+                    processed: 0,
+                    total: 0,
+                    bytes: false,
+                });
+
+                thread::sleep(Duration::from_millis(150));
+            }
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Listing (for the preview panel)
+// ---------------------------------------------------------------------------
+
+/// The names inside an archive, for a preview -- without extracting it.
+pub struct ArchiveListing {
+    pub entries: Vec<String>,
+    /// There were more than `limit` entries; `entries` is only the start.
+    pub truncated: bool,
+}
+
+/// List up to `limit` entries of a ZIP or (gzip-compressed) tar archive.
+/// Formats that need an external tool aren't listed.
+pub fn list_entries(path: &Path, limit: usize) -> Result<ArchiveListing, String> {
+    let name = lowercase_name(path);
+    let file = fs::File::open(path).map_err(|err| err.to_string())?;
+
+    if name.ends_with(".zip") {
+        let archive = ZipArchive::new(file).map_err(|err| err.to_string())?;
+
+        let mut entries: Vec<String> = archive.file_names().take(limit + 1).map(String::from).collect();
+        let truncated = entries.len() > limit;
+        entries.truncate(limit);
+
+        return Ok(ArchiveListing { entries, truncated });
+    }
+
+    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        return list_tar(GzDecoder::new(file), limit);
+    }
+
+    if name.ends_with(".tar") {
+        return list_tar(file, limit);
+    }
+
+    Err("This kind of archive can't be previewed".to_string())
+}
+
+fn list_tar<R: Read>(reader: R, limit: usize) -> Result<ArchiveListing, String> {
+    let mut archive = Archive::new(reader);
+    let mut entries = Vec::new();
+    let mut truncated = false;
+
+    for entry in archive.entries().map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+
+        if entries.len() >= limit {
+            truncated = true;
+            break;
+        }
+
+        let path = entry.path().map_err(|err| err.to_string())?;
+        entries.push(path.to_string_lossy().to_string());
+    }
+
+    Ok(ArchiveListing { entries, truncated })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::test_support::scratch_dir;
+
+    /// Drain a job's messages and return its final result.
+    fn finish(receiver: async_channel::Receiver<JobMessage>) -> Result<usize, String> {
+        loop {
+            match receiver.recv_blocking() {
+                Ok(JobMessage::Finished { result }) => return result,
+                Ok(_) => continue,
+                Err(_) => return Err("job ended without a result".to_string()),
+            }
+        }
+    }
+
+    /// root/docs/{a.txt, sub/b.txt, link-to-a -> a.txt}; returns `docs`.
+    fn sample_tree(tag: &str) -> PathBuf {
+        let root = scratch_dir(tag);
+        let docs = root.join("docs");
+
+        fs::create_dir_all(docs.join("sub")).unwrap();
+        fs::write(docs.join("a.txt"), "alpha").unwrap();
+        fs::write(docs.join("sub").join("b.txt"), "beta").unwrap();
+        std::os::unix::fs::symlink("a.txt", docs.join("link-to-a")).unwrap();
+
+        docs
+    }
+
+    #[test]
+    fn tar_gz_round_trip_keeps_files_and_symlinks() {
+        let docs = sample_tree("archive-targz");
+        let root = docs.parent().unwrap().to_path_buf();
+
+        let archive = default_archive_path(&root, &[docs.clone()], "tar.gz");
+        assert_eq!(archive, root.join("docs.tar.gz"));
+
+        let (sender, receiver) = async_channel::unbounded();
+        let _handle = start_compress_tar_gz_job(vec![docs.clone()], archive.clone(), sender);
+        assert_eq!(finish(receiver), Ok(1));
+        assert!(archive.exists());
+
+        let out = root.join("out");
+        let (sender, receiver) = async_channel::unbounded();
+        let _handle = start_extract_job(archive.clone(), out.clone(), sender);
+        assert!(finish(receiver).is_ok());
+
+        assert_eq!(fs::read_to_string(out.join("docs/a.txt")).unwrap(), "alpha");
+        assert_eq!(fs::read_to_string(out.join("docs/sub/b.txt")).unwrap(), "beta");
+        assert_eq!(
+            fs::read_link(out.join("docs/link-to-a")).unwrap(),
+            PathBuf::from("a.txt")
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn zip_round_trip_and_listing() {
+        let docs = sample_tree("archive-zip");
+        let root = docs.parent().unwrap().to_path_buf();
+
+        let archive = default_archive_path(&root, &[docs.clone()], "zip");
+        assert_eq!(archive, root.join("docs.zip"));
+
+        let (sender, receiver) = async_channel::unbounded();
+        let _handle = start_compress_zip_job(vec![docs.clone()], archive.clone(), sender);
+        assert!(finish(receiver).is_ok());
+
+        let listing = list_entries(&archive, 100).unwrap();
+        assert!(listing.entries.iter().any(|name| name == "docs/a.txt"));
+        assert!(!listing.truncated);
+
+        let short = list_entries(&archive, 1).unwrap();
+        assert_eq!(short.entries.len(), 1);
+        assert!(short.truncated);
+
+        let out = root.join("out");
+        let (sender, receiver) = async_channel::unbounded();
+        let _handle = start_extract_job(archive.clone(), out.clone(), sender);
+        assert!(finish(receiver).is_ok());
+
+        assert_eq!(fs::read_to_string(out.join("docs/a.txt")).unwrap(), "alpha");
+        assert_eq!(fs::read_to_string(out.join("docs/sub/b.txt")).unwrap(), "beta");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tar_gz_listing_shows_the_files_inside() {
+        let docs = sample_tree("archive-tar-listing");
+        let root = docs.parent().unwrap().to_path_buf();
+        let archive = root.join("docs.tar.gz");
+
+        let (sender, receiver) = async_channel::unbounded();
+        let _handle = start_compress_tar_gz_job(vec![docs], archive.clone(), sender);
+        assert!(finish(receiver).is_ok());
+
+        let listing = list_entries(&archive, 100).unwrap();
+        assert!(listing.entries.iter().any(|name| name.ends_with("a.txt")));
+        assert!(list_entries(&root.join("nope.rar"), 10).is_err());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn zip_entries_that_climb_out_of_the_folder_are_skipped() {
+        let root = scratch_dir("archive-zipslip");
+        let evil = root.join("evil.zip");
+
+        {
+            let mut zip = ZipWriter::new(fs::File::create(&evil).unwrap());
+            let options = SimpleFileOptions::default();
+
+            // If this version of the zip crate refuses to even write such a
+            // name there's nothing to test.
+            if zip.start_file("../escaped.txt", options).is_err() {
+                return;
+            }
+
+            zip.write_all(b"gotcha").unwrap();
+            zip.start_file("safe/inside.txt", options).unwrap();
+            zip.write_all(b"fine").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let dest = root.join("dest");
+        let (sender, receiver) = async_channel::unbounded();
+        let _handle = start_extract_job(evil, dest.clone(), sender);
+        assert!(finish(receiver).is_ok());
+
+        assert!(!root.join("escaped.txt").exists());
+        assert_eq!(fs::read_to_string(dest.join("safe/inside.txt")).unwrap(), "fine");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_failed_extraction_removes_the_folder_it_created() {
+        let root = scratch_dir("archive-cleanup");
+        let not_really_a_zip = root.join("broken.zip");
+        fs::write(&not_really_a_zip, "this is not a zip file").unwrap();
+
+        let dest = root.join("dest");
+        let (sender, receiver) = async_channel::unbounded();
+        let _handle = start_extract_job(not_really_a_zip, dest.clone(), sender);
+
+        assert!(finish(receiver).is_err());
+        assert!(!dest.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn archive_names_are_derived_sensibly() {
+        let dir = Path::new("/nonexistent-folder");
+
+        assert_eq!(
+            default_archive_path(dir, &[PathBuf::from("/x/Photos")], "zip"),
+            dir.join("Photos.zip")
+        );
+        assert_eq!(
+            default_archive_path(dir, &[PathBuf::from("/x/a"), PathBuf::from("/x/b")], "tar.gz"),
+            dir.join("Archive.tar.gz")
+        );
+
+        assert_eq!(archive_folder_name("Photos.TAR.GZ"), "Photos");
+        assert_eq!(archive_folder_name("backup.tgz"), "backup");
+        assert_eq!(archive_folder_name("old.tar.xz"), "old");
+        assert_eq!(archive_folder_name("plain"), "Extracted");
+        assert_eq!(archive_folder_name(".zip"), "Extracted");
+
+        assert!(is_supported_archive(Path::new("a.ZIP")));
+        assert!(is_supported_archive(Path::new("a.tar.gz")));
+        assert!(!is_supported_archive(Path::new("a.txt")));
+    }
 }

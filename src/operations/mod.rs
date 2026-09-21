@@ -3,7 +3,9 @@ pub mod batch_rename;
 pub mod copy;
 pub mod create;
 pub mod jobs;
+pub mod link;
 pub mod move_op;
+pub mod privileged;
 pub mod rename;
 pub mod trash;
 
@@ -28,7 +30,8 @@ pub enum PendingOp {
 pub fn validate_name(name: &str) -> Result<&str, FileManagerError> {
     let name = name.trim();
 
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0')
+    {
         return Err(FileManagerError::InvalidName);
     }
 
@@ -52,6 +55,12 @@ pub fn paste_pending(
 ) -> Result<usize, FileManagerError> {
     if !destination_dir.is_dir() {
         return Err(FileManagerError::NotADirectory);
+    }
+
+    // A move removes the original, so it obeys the same protected-path
+    // rules as delete and rename. (Copying a system folder is harmless.)
+    if matches!(operation, PendingOp::Move) {
+        crate::filesystem::protection::ensure_modifiable(sources)?;
     }
 
     let mut pasted = 0;
@@ -94,8 +103,49 @@ pub fn paste_pending(
 
 /// `true` if *something* is already at `path` -- including a dangling
 /// symlink, which `Path::exists` (it follows links) would call "free".
-fn occupied(path: &Path) -> bool {
+pub fn occupied(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
+}
+
+/// Extensions made of two parts, which must stay together: an archive that
+/// collides becomes "backup (1).tar.gz", not "backup.tar (1).gz".
+const COMPOUND_EXTENSIONS: &[&str] = &[
+    ".tar.gz",
+    ".tar.bz2",
+    ".tar.xz",
+    ".tar.zst",
+    ".tar.lz",
+    ".tar.lzma",
+];
+
+/// Split "photo.jpg" into ("photo", Some("jpg")). A dotfile like ".bashrc"
+/// has no extension, and "x.tar.gz" splits as ("x", Some("tar.gz")).
+fn split_name(file_name: &str) -> (String, Option<String>) {
+    let bytes = file_name.as_bytes();
+
+    for suffix in COMPOUND_EXTENSIONS {
+        if bytes.len() > suffix.len() {
+            let cut = bytes.len() - suffix.len();
+
+            // The tail is pure ASCII, so `cut` (where the '.' is) is always
+            // on a character boundary.
+            if bytes[cut..].eq_ignore_ascii_case(suffix.as_bytes()) {
+                return (
+                    file_name[..cut].to_string(),
+                    Some(file_name[cut + 1..].to_string()),
+                );
+            }
+        }
+    }
+
+    if file_name.starts_with('.') && file_name.matches('.').count() == 1 {
+        return (file_name.to_string(), None);
+    }
+
+    match file_name.rsplit_once('.') {
+        Some((stem, extension)) => (stem.to_string(), Some(extension.to_string())),
+        None => (file_name.to_string(), None),
+    }
 }
 
 pub fn unique_destination(destination: &Path) -> PathBuf {
@@ -111,15 +161,7 @@ pub fn unique_destination(destination: &Path) -> PathBuf {
         .to_string_lossy()
         .to_string();
 
-    let (stem, extension): (String, Option<String>) =
-        if file_name.starts_with('.') && file_name.matches('.').count() == 1 {
-            (file_name.clone(), None)
-        } else {
-            match file_name.rsplit_once('.') {
-                Some((stem, extension)) => (stem.to_string(), Some(extension.to_string())),
-                None => (file_name.clone(), None),
-            }
-        };
+    let (stem, extension) = split_name(&file_name);
 
     let mut counter = 1;
 
@@ -178,6 +220,33 @@ mod tests {
         let dotfile = dir.join(".bashrc");
         fs::write(&dotfile, "x").unwrap();
         assert_eq!(unique_destination(&dotfile), dir.join(".bashrc (1)"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn archives_keep_their_double_extension_when_renamed_to_avoid_a_clash() {
+        let dir = scratch_dir("unique-compound");
+        let archive = dir.join("backup.tar.gz");
+        fs::write(&archive, "x").unwrap();
+
+        assert_eq!(unique_destination(&archive), dir.join("backup (1).tar.gz"));
+
+        assert_eq!(
+            split_name("photos.TAR.GZ"),
+            ("photos".to_string(), Some("TAR.GZ".to_string()))
+        );
+        assert_eq!(
+            split_name("notes.txt"),
+            ("notes".to_string(), Some("txt".to_string()))
+        );
+        assert_eq!(split_name(".bashrc"), (".bashrc".to_string(), None));
+        assert_eq!(split_name("Makefile"), ("Makefile".to_string(), None));
+        // Non-ASCII names are split on a character boundary, not mid-letter.
+        assert_eq!(
+            split_name("résumé.tar.gz"),
+            ("résumé".to_string(), Some("tar.gz".to_string()))
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

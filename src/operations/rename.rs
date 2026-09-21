@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 
 pub fn rename_path(source: &Path, new_name: &str) -> Result<PathBuf, FileManagerError> {
     let new_name = validate_name(new_name)?;
+
+    crate::filesystem::protection::ensure_modifiable(&[source.to_path_buf()])?;
+
     let destination = source.with_file_name(new_name);
 
     // Renaming something to the name it already has is a no-op, not a
