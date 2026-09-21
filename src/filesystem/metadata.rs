@@ -38,6 +38,60 @@ pub fn for_path(path: &Path) -> FileMetadata {
     }
 }
 
+/// Fail early -- before writing anything -- if `needed` bytes clearly won't
+/// fit where `destination` lives, with a message saying how much is needed
+/// and how much is there. A filesystem that reports zero available is
+/// treated as "unknown", not "full": some network mounts do.
+///
+/// `destination` need not exist yet; its nearest existing ancestor is asked.
+pub fn ensure_free_space(destination: &Path, needed: u64) -> Result<(), String> {
+    let mut probe = destination;
+
+    while !probe.exists() {
+        match probe.parent() {
+            Some(parent) => probe = parent,
+            None => return Ok(()),
+        }
+    }
+
+    match free_space_bytes(probe) {
+        Some(free) if free > 0 && needed > free => Err(format!(
+            "Not enough free space: {} needed, {} available",
+            format_size(needed),
+            format_size(free)
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Build a `FileMetadata` from metadata already in hand -- what a directory
+/// listing gets for free from `DirEntry::metadata` -- instead of `for_path`'s
+/// two or three separate `stat` calls per file.
+///
+/// `link_metadata` is the entry itself (an `lstat`); `target_metadata` is
+/// what a symlink points at (`None` for anything that isn't a symlink, or a
+/// dangling one). As in `for_path`, a link is described by its target's size,
+/// time and permissions, falling back to the link's own if it dangles.
+pub fn from_metadata(
+    link_metadata: &fs::Metadata,
+    target_metadata: Option<&fs::Metadata>,
+) -> FileMetadata {
+    let is_symlink = link_metadata.file_type().is_symlink();
+
+    let shown = if is_symlink {
+        target_metadata.unwrap_or(link_metadata)
+    } else {
+        link_metadata
+    };
+
+    FileMetadata {
+        size: shown.len(),
+        modified: shown.modified().ok(),
+        permissions: permission_string(&shown.permissions()),
+        is_symlink,
+    }
+}
+
 fn permission_string(permissions: &fs::Permissions) -> String {
     #[cfg(unix)]
     {
@@ -83,7 +137,7 @@ pub fn free_space_string(path: &Path) -> String {
     }
 }
 
-fn free_space_bytes(path: &Path) -> Option<u64> {
+pub fn free_space_bytes(path: &Path) -> Option<u64> {
     use std::ffi::CString;
     use std::mem::MaybeUninit;
     use std::os::unix::ffi::OsStrExt;
@@ -156,5 +210,66 @@ pub fn format_modified(modified: Option<SystemTime>) -> String {
         format!("{}h ago", secs / 3600)
     } else {
         format!("{}d ago", secs / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::test_support::scratch_dir;
+
+    #[test]
+    fn metadata_from_a_listing_matches_the_stat_based_version() {
+        let dir = scratch_dir("metadata-from");
+        let file = dir.join("data.bin");
+        fs::write(&file, vec![0u8; 321]).unwrap();
+
+        let link_metadata = fs::symlink_metadata(&file).unwrap();
+        let fast = from_metadata(&link_metadata, None);
+        let slow = for_path(&file);
+
+        assert_eq!(fast.size, 321);
+        assert_eq!(fast.size, slow.size);
+        assert_eq!(fast.permissions, slow.permissions);
+        assert!(!fast.is_symlink);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn free_space_check_rejects_the_impossible_and_allows_the_trivial() {
+        let dir = scratch_dir("metadata-space");
+
+        let refusal = ensure_free_space(&dir, u64::MAX).unwrap_err();
+        assert!(refusal.starts_with("Not enough free space"), "{refusal}");
+
+        // Nothing needed, and a destination that doesn't exist yet.
+        assert!(ensure_free_space(&dir.join("not/yet/created"), 0).is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_symlink_reports_its_targets_size_but_is_flagged_as_a_link() {
+        let dir = scratch_dir("metadata-link");
+        let file = dir.join("real.bin");
+        fs::write(&file, vec![0u8; 500]).unwrap();
+        let link = dir.join("alias");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+
+        let link_metadata = fs::symlink_metadata(&link).unwrap();
+        let target_metadata = fs::metadata(&link).unwrap();
+        let described = from_metadata(&link_metadata, Some(&target_metadata));
+
+        assert!(described.is_symlink);
+        assert_eq!(described.size, 500);
+
+        // Dangling: falls back to the link's own (tiny) size.
+        fs::remove_file(&file).unwrap();
+        let dangling = from_metadata(&fs::symlink_metadata(&link).unwrap(), None);
+        assert!(dangling.is_symlink);
+        assert!(dangling.size < 500);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

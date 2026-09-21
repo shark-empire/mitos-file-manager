@@ -259,7 +259,7 @@ fn parse_original_path(content: &str) -> Option<PathBuf> {
             let rest = rest.trim();
             let rest = rest.strip_prefix("file://").unwrap_or(rest);
 
-            return Some(PathBuf::from(percent_decode(rest)));
+            return Some(PathBuf::from(crate::util::percent_decode(rest)));
         }
     }
 
@@ -288,27 +288,6 @@ fn parse_deletion_date(content: &str) -> Option<String> {
     }
 
     None
-}
-
-fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-
-        out.push(bytes[i]);
-        i += 1;
-    }
-
-    String::from_utf8_lossy(&out).to_string()
 }
 
 fn move_with_fallback(source: &Path, destination: &Path) -> io::Result<()> {
