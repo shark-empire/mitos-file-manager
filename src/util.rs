@@ -38,3 +38,20 @@ pub fn get_obj_data<O: glib::object::ObjectType, T: Clone + 'static>(
 pub fn take_obj_data<O: glib::object::ObjectType, T: 'static>(obj: &O, key: &str) -> Option<T> {
     unsafe { obj.steal_data::<T>(key) }
 }
+
+#[cfg(test)]
+pub mod test_support {
+    use std::path::PathBuf;
+
+    /// A fresh, empty directory unique to `tag` (and to this test process),
+    /// for tests that need a real filesystem. Give every test its own tag:
+    /// tests run in parallel.
+    pub fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mitos-fm-test-{}-{tag}", std::process::id()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+
+        dir
+    }
+}
