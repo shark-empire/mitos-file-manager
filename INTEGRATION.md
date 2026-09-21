@@ -72,3 +72,49 @@ Drop a folder containing `plugin.json` into `~/.config/mitos/file-manager/plugin
 
 ### 9. Command line
 `mitos-file-manager [PATH...]` opens each directory in its own tab. A file path opens the folder that contains it. With no arguments it opens the home directory.
+
+### 10. `org.mitos.Trash` (session bus)
+The trash can as a service, so the desktop shell can show a full/empty icon, a settings panel can offer "Empty Trash", and other apps can list or restore what was deleted. Object path `/org/mitos/Trash`, name `org.mitos.Trash`. It reads the user's trash plus the per-drive trash folders of anything mounted under `/media`, `/run/media` or `/mnt`.
+
+| Method | Arguments | Returns |
+|---|---|---|
+| `Count` | — | `u` — number of trashed items |
+| `IsEmpty` | — | `b` |
+| `List` | — | `a(ssss)` — `(file_path, original_path, deletion_date, location)` per item; `deletion_date` is empty when unknown, `location` is "Home" or the drive's name |
+| `Restore` | `file_path: s` | — puts the item back where it came from |
+| `DeleteForever` | `file_path: s` | — |
+| `Empty` | — | — |
+
+Items are identified by their `file_path` from `List`. The service only acts on paths it currently lists, so it cannot be used to delete anything else. Failures come back as `org.freedesktop.DBus.Error.Failed` with a message.
+
+### 11. Administrator operations
+The file manager never runs as root. When an operation fails with "Permission denied" the user is offered *Retry as Administrator*, which re-runs this same executable in a window-less helper mode:
+
+```text
+<elevation command> /path/to/mitos-file-manager --privileged <operation> <arguments...>
+```
+
+* **Elevation command** -- `pkexec` by default. Set `MITOS_ELEVATE_COMMAND` (split on whitespace, e.g. `mitosvc-ctl elevate --`) to route the prompt through another mechanism, such as the MITOS permission service, without recompiling.
+* **Operations** -- a fixed list; every path must be absolute and free of `..`:
+
+| Arguments after `--privileged` | Effect |
+|---|---|
+| `delete <path>...` | Delete files / folder trees (links removed, never followed) |
+| `rename <from> <to>` | Rename; refuses to replace an existing file |
+| `mkdir <path>` / `touch <path>` | Create a folder / an empty file; never overwrite |
+| `chmod <octal> <path>` | Set permission bits |
+| `paste <copy\|move> (<keep\|replace> <source> <target>)...` | Copy or move, keeping both or replacing on a name clash |
+
+Exit status 0 on success; otherwise 1 with a one-line reason on stderr. `delete`, `rename` and `move` refuse the same protected paths (`/usr`, `/etc`, mount points, ...) that the GUI does.
+
+### 12. Clipboard and drag-and-drop
+* **Copy / Cut** puts three formats on the system clipboard: a file list (`text/uri-list`), `x-special/gnome-copied-files` (`copy` or `cut`, then the URIs -- how Nautilus, Thunar and PCManFM tell a cut from a copy) and the paths as plain text.
+* **Paste** reads the file list. If the clipboard still holds the files this app put there, its own copy-vs-cut applies; files from another program are pasted as a copy.
+* **Drop targets** accept a file list and offer copy or move. Holding Ctrl forces a copy and Shift a move; with neither, the same filesystem moves and a different one copies. Dropping onto the Trash row trashes the files properly.
+
+### 13. Caches and state
+| Path | Purpose |
+|---|---|
+| `~/.cache/thumbnails/normal/` | Freedesktop thumbnail cache. Images and videos are rendered here at 128 px with `Thumb::URI` and `Thumb::MTime`, so other file managers reuse them; one older than its file is regenerated |
+| `~/.config/mitos/file-manager/servers.json` | Recently used network addresses (never with a password) |
+| `recently-used.xbel` (via `GtkRecentManager`) | Files opened from this app are added; read back for the sidebar's "Recent" section |

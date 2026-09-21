@@ -19,3 +19,12 @@ flate2 = "1.0"
 libc = "0.2"
 zbus = { version = "4", features = ["blocking"] }
 mitos-utils = { git = "https://github.com/shark-empire/mitos-utils"}
+
+# A smaller binary is a smaller memory footprint: thin LTO and one codegen
+# unit let the compiler drop what's unused, and stripping debug info keeps it
+# out of the mapped image. (Panics still unwind, so a crashed worker thread
+# doesn't take the whole window with it.)
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
