@@ -20,8 +20,14 @@ pub fn set_default_app(app: &gio::AppInfo, mime: &str) -> Result<(), String> {
 /// Launch an application with a file.
 pub fn launch_app_with_file(app: &gio::AppInfo, path: &Path) -> Result<(), String> {
     let file = gio::File::for_path(path);
+
     app.launch(&[file], None::<&gio::AppLaunchContext>)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Opening something puts it in the recent-files list.
+    crate::navigation::recent::record(path);
+
+    Ok(())
 }
 
 /// Get a display-friendly list of (app_name, app_info) pairs.
