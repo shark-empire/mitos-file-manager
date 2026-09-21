@@ -78,7 +78,10 @@ mod percent_tests {
     fn escapes_are_decoded() {
         assert_eq!(percent_decode("a%20b"), "a b");
         assert_eq!(percent_decode("%C3%A9t%C3%A9"), "\u{e9}t\u{e9}");
-        assert_eq!(percent_decode("/home/u/My%20Files/100%25"), "/home/u/My Files/100%");
+        assert_eq!(
+            percent_decode("/home/u/My%20Files/100%25"),
+            "/home/u/My Files/100%"
+        );
     }
 
     #[test]

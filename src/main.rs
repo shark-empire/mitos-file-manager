@@ -475,9 +475,7 @@ fn portal_reply(result: Result<gio::File, glib::Error>) -> portal::service::Port
             // with no FUSE mount, say). A caller expecting a filesystem
             // path can't do anything with an empty string, so report the
             // failure instead of pretending a selection was made.
-            None => PortalResponse::Error(
-                "The selected location has no local path".to_string(),
-            ),
+            None => PortalResponse::Error("The selected location has no local path".to_string()),
         },
         // Dismissed, or closed without choosing anything.
         Err(_) => PortalResponse::Cancelled,
@@ -588,8 +586,7 @@ fn start_compress_zip_job_ui(
         return;
     }
 
-    let archive_path =
-        operations::archive::default_archive_path(&destination_dir, &sources, "zip");
+    let archive_path = operations::archive::default_archive_path(&destination_dir, &sources, "zip");
 
     let Some(queue) = get_obj_data::<_, JobQueue>(location_entry, "job-queue") else {
         return;
@@ -865,8 +862,9 @@ fn elevated_retry_for(request: &JobRequest) -> Option<ElevatedRetry> {
 
             Some(ElevatedRetry {
                 operation: Operation::Paste { kind, entries },
-                prompt: "MITOS Files doesn't have permission to do this. Retry it as administrator?"
-                    .to_string(),
+                prompt:
+                    "MITOS Files doesn't have permission to do this. Retry it as administrator?"
+                        .to_string(),
             })
         }
         JobRequest::Delete { paths } => Some(ElevatedRetry {
@@ -2229,7 +2227,8 @@ fn build_ui(
                 return None;
             }
 
-            let files: Vec<gio::File> = paths.iter().map(|path| gio::File::for_path(path)).collect();
+            let files: Vec<gio::File> =
+                paths.iter().map(|path| gio::File::for_path(path)).collect();
             let file_list = gtk::gdk::FileList::from_array(&files);
 
             Some(gtk::gdk::ContentProvider::for_value(&file_list.to_value()))
@@ -2709,16 +2708,16 @@ fn build_ui(
 
             // Entry 0 of the dropdown is "All types"; entry N is
             // `FileTypeFilter::all()[N - 1]`.
-            let file_types: Vec<search::filters::FileTypeFilter> =
-                (search_type_dropdown.selected() as usize)
-                    .checked_sub(1)
-                    .and_then(|index| {
-                        search::filters::FileTypeFilter::all()
-                            .into_iter()
-                            .nth(index)
-                    })
-                    .into_iter()
-                    .collect();
+            let file_types: Vec<search::filters::FileTypeFilter> = (search_type_dropdown.selected()
+                as usize)
+                .checked_sub(1)
+                .and_then(|index| {
+                    search::filters::FileTypeFilter::all()
+                        .into_iter()
+                        .nth(index)
+                })
+                .into_iter()
+                .collect();
 
             // Nothing typed and no type chosen: back to the plain folder view.
             if query.is_empty() && file_types.is_empty() {
@@ -2792,9 +2791,8 @@ fn build_ui(
 
             let location_entry = location_entry.clone();
 
-            glib::timeout_add_local(
-                std::time::Duration::from_millis(50),
-                move || match rx.try_recv() {
+            glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                match rx.try_recv() {
                     Ok(results) => {
                         // The tab may have moved to another folder while the
                         // search ran; results for the old one would replace
@@ -2843,8 +2841,8 @@ fn build_ui(
                     // search cancelled it, and that one owns the grid now.
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
                     Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                },
-            );
+                }
+            });
         });
     }
 
@@ -4918,7 +4916,6 @@ fn typeahead_select(
     }
 }
 
-
 fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
     if let Some(app) = window.application() {
         let notification = gio::Notification::new(title);
@@ -4991,7 +4988,10 @@ fn show_history_menu(anchor: &Button, forward: bool, job_ui: JobUi) {
                     .history
                     .jump_forward(index + 1, &current)
             } else {
-                tab_state.borrow_mut().history.jump_back(index + 1, &current)
+                tab_state
+                    .borrow_mut()
+                    .history
+                    .jump_back(index + 1, &current)
             };
 
             if let Some(target) = target {
@@ -5061,7 +5061,9 @@ fn show_recent_context_menu(
             let ctx = ctx.clone();
 
             glib::timeout_add_local(std::time::Duration::from_millis(delay_ms), move || {
-                if let Some(win) = get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window") {
+                if let Some(win) =
+                    get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window")
+                {
                     sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
                 }
 
@@ -5211,8 +5213,12 @@ mod tests {
     fn only_permission_failures_are_offered_an_administrator_retry() {
         assert!(is_permission_error("Permission denied (os error 13)"));
         assert!(is_permission_error("Operation not permitted (os error 1)"));
-        assert!(!is_permission_error("No such file or directory (os error 2)"));
-        assert!(!is_permission_error("No space left on device (os error 28)"));
+        assert!(!is_permission_error(
+            "No such file or directory (os error 2)"
+        ));
+        assert!(!is_permission_error(
+            "No space left on device (os error 28)"
+        ));
     }
 
     #[test]
@@ -5266,7 +5272,10 @@ mod tests {
 
     #[test]
     fn jobs_where_root_would_not_help_have_no_retry() {
-        assert!(elevated_retry_for(&JobRequest::BatchRename { renames: Vec::new() }).is_none());
+        assert!(elevated_retry_for(&JobRequest::BatchRename {
+            renames: Vec::new()
+        })
+        .is_none());
         assert!(elevated_retry_for(&JobRequest::ExtractArchive {
             archive_path: PathBuf::from("/a.zip"),
             destination_dir: PathBuf::from("/b"),
@@ -5276,9 +5285,8 @@ mod tests {
 
     #[test]
     fn permission_denied_is_recognised_inside_file_manager_errors() {
-        let denied = error::FileManagerError::Io(std::io::Error::from(
-            std::io::ErrorKind::PermissionDenied,
-        ));
+        let denied =
+            error::FileManagerError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         let missing =
             error::FileManagerError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
 
