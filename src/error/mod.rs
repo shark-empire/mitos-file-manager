@@ -11,6 +11,10 @@ pub enum FileManagerError {
     /// A folder was required -- somewhere to paste into, a parent to create
     /// something in, a location to browse -- but the path is something else.
     NotADirectory,
+    /// The operation would touch something that must never be deleted,
+    /// moved or renamed (`filesystem::protection`). The message already
+    /// says which path and why.
+    Protected(String),
 }
 
 impl fmt::Display for FileManagerError {
@@ -32,6 +36,7 @@ impl fmt::Display for FileManagerError {
                 "Invalid name -- it can't be empty, \".\", \"..\", or contain \"/\""
             ),
             Self::NotADirectory => write!(f, "Not a folder"),
+            Self::Protected(message) => write!(f, "{message}"),
         }
     }
 }
