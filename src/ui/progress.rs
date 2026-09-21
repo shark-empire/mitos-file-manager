@@ -101,7 +101,7 @@ pub fn show_progress_dialog<F>(
                 JobMessage::Started {
                     label: text,
                     total,
-                    bytes: _,
+                    bytes,
                 } => {
                     label.set_label(&text);
 
@@ -109,6 +109,17 @@ pub fn show_progress_dialog<F>(
                         bar.pulse();
                     } else {
                         bar.set_fraction(0.0);
+
+                        // Show the right unit from the first frame, instead
+                        // of an empty bar until the first Progress message
+                        // arrives.
+                        let initial = if bytes {
+                            format!("0 B of {}", metadata::format_size(total))
+                        } else {
+                            format!("0 of {} items", total)
+                        };
+
+                        bar.set_text(Some(&initial));
                     }
                 }
 

@@ -32,6 +32,30 @@ pub struct SplitPane {
     pub state: Rc<RefCell<SplitPaneState>>,
 }
 
+impl SplitPane {
+    /// Paths of whatever is selected in this pane's grid, in display order.
+    pub fn selected_paths(&self) -> Vec<PathBuf> {
+        let state = self.state.borrow();
+
+        (0..self.store.n_items())
+            .filter(|&position| self.selection.is_selected(position))
+            .filter_map(|position| state.items.get(position as usize))
+            .map(|item| item.path.clone())
+            .collect()
+    }
+
+    /// Point this pane at `path`, remembering where it was so the pane's own
+    /// Back button still works.
+    pub fn navigate(&self, path: PathBuf) {
+        navigate_to(&self.state, &self.store, &self.location_label, path);
+    }
+
+    /// Move keyboard focus into the pane's file grid.
+    pub fn focus_grid(&self) {
+        self.grid.grab_focus();
+    }
+}
+
 pub fn build(initial_path: PathBuf) -> SplitPane {
     let container = GtkBox::new(Orientation::Vertical, 4);
     container.set_width_request(350);
@@ -127,6 +151,14 @@ pub fn build(initial_path: PathBuf) -> SplitPane {
                     state.borrow_mut().history.push(old);
                     state.borrow_mut().current = item.path.clone();
                     refresh_pane(&state, &store, &location_label);
+                } else {
+                    // Files open in their default application, same as in
+                    // the main view.
+                    let uri = gio::File::for_path(&item.path).uri();
+                    let _ = gio::AppInfo::launch_default_for_uri(
+                        &uri,
+                        None::<&gio::AppLaunchContext>,
+                    );
                 }
             }
         });

@@ -1,4 +1,5 @@
 use crate::navigation::bookmarks::Bookmark;
+use crate::navigation::locations;
 use crate::ui::dialogs;
 use gtk::gio;
 use gtk::prelude::*;
@@ -13,54 +14,33 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
     // --- 1. PLACES ---
     add_header(list, "Places");
 
-    let places = vec![
-        (
-            "Home",
-            "user-home-symbolic",
-            dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
-        ),
-        (
-            "Desktop",
-            "user-desktop-symbolic",
-            dirs::desktop_dir().unwrap_or_else(|| PathBuf::from("/Desktop")),
-        ),
-        (
-            "Documents",
-            "folder-documents-symbolic",
-            dirs::document_dir().unwrap_or_else(|| PathBuf::from("/Documents")),
-        ),
-        (
-            "Downloads",
-            "folder-download-symbolic",
-            dirs::download_dir().unwrap_or_else(|| PathBuf::from("/Downloads")),
-        ),
-        (
-            "Music",
-            "folder-music-symbolic",
-            dirs::audio_dir().unwrap_or_else(|| PathBuf::from("/Music")),
-        ),
-        (
-            "Pictures",
-            "folder-pictures-symbolic",
-            dirs::picture_dir().unwrap_or_else(|| PathBuf::from("/Pictures")),
-        ),
-        (
-            "Videos",
-            "folder-videos-symbolic",
-            dirs::video_dir().unwrap_or_else(|| PathBuf::from("/Videos")),
-        ),
-        (
-            "Trash",
-            "user-trash-symbolic",
-            dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("/.local/share"))
-                .join("Trash/files"),
-        ),
-    ];
+    let home = locations::home_dir();
 
-    for (name, icon, path) in places {
-        add_row(list, name, icon, path, None, window);
+    for (name, path) in locations::default_places() {
+        // Home and the filesystem root are always meaningful. The XDG
+        // folders only get a row if they really exist and aren't just
+        // $HOME again (what an unset or disabled entry in
+        // user-dirs.dirs resolves to) -- a row that goes nowhere when
+        // clicked is worse than no row.
+        let always_shown = name == "Home" || name == "Computer";
+
+        if !always_shown && (path == home || !path.is_dir()) {
+            continue;
+        }
+
+        add_row(list, &name, place_icon(&name), path, None, window);
     }
+
+    add_row(
+        list,
+        "Trash",
+        "user-trash-symbolic",
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("/.local/share"))
+            .join("Trash/files"),
+        None,
+        window,
+    );
 
     // --- RECENT FILES ---
     let recents = crate::navigation::recent::recent_files(10);
@@ -195,6 +175,22 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
         row.set_child(Some(&row_box));
         row.set_widget_name("action:connect-to-server");
         list.append(&row);
+    }
+}
+
+/// Sidebar icon for one of `locations::default_places`' entries.
+fn place_icon(name: &str) -> &'static str {
+    match name {
+        "Home" => "user-home-symbolic",
+        "Desktop" => "user-desktop-symbolic",
+        "Documents" => "folder-documents-symbolic",
+        "Downloads" => "folder-download-symbolic",
+        "Music" => "folder-music-symbolic",
+        "Pictures" => "folder-pictures-symbolic",
+        "Videos" => "folder-videos-symbolic",
+        "Public" => "folder-publicshare-symbolic",
+        "Computer" => "drive-harddisk-symbolic",
+        _ => "folder-symbolic",
     }
 }
 

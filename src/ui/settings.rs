@@ -1,4 +1,5 @@
 use crate::config::settings;
+use crate::ui::theme::ThemeMode;
 use gtk::prelude::*;
 use gtk::{ApplicationWindow, Box as GtkBox, Button, Grid, Label, Orientation, SpinButton, Switch};
 use std::rc::Rc;
@@ -138,9 +139,15 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
             let summary = outcomes
                 .iter()
                 .map(|outcome| match &outcome.app_name {
-                    Some(name) if outcome.applied > 0 => {
+                    Some(name) if outcome.applied > 0 && outcome.failed == 0 => {
                         format!("{}: {name} ({} types)", outcome.label, outcome.applied)
                     }
+                    // Some types took and some didn't -- say so instead of
+                    // reporting a clean success.
+                    Some(name) if outcome.applied > 0 => format!(
+                        "{}: {name} ({} types set, {} couldn't be changed)",
+                        outcome.label, outcome.applied, outcome.failed
+                    ),
                     Some(name) => format!("{}: found {name}, but couldn't set it", outcome.label),
                     None => format!("{}: no matching app installed, skipped", outcome.label),
                 })
@@ -181,11 +188,12 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
         let apply = apply_changes.clone();
 
         apply_btn.connect_clicked(move |_| {
-            let theme = if theme_dropdown.selected() == 1 {
-                "dark"
+            let theme_mode = if theme_dropdown.selected() == 1 {
+                ThemeMode::Dark
             } else {
-                "light"
+                ThemeMode::Light
             };
+            let theme = theme_mode.as_str();
 
             let view = if view_dropdown.selected() == 1 {
                 "list"

@@ -51,14 +51,16 @@ pub fn show_tab_context_menu(
     let popover_close_others = popover.clone();
 
     close_others_btn.connect_clicked(move |_| {
-        let keep_page = notebook_clone2.page_num(&page_widget_clone2);
-
+        // Look the kept tab's position up again on every pass: removing a
+        // tab in front of it shifts its index down by one, so an index
+        // worked out once up front would end up pointing at the wrong tab
+        // -- and this loop would close the very tab it was meant to keep.
         let mut i = 0;
         while i < notebook_clone2.n_pages() {
-            if Some(i) != keep_page {
-                notebook_clone2.remove_page(Some(i));
-            } else {
+            if Some(i) == notebook_clone2.page_num(&page_widget_clone2) {
                 i += 1;
+            } else {
+                notebook_clone2.remove_page(Some(i));
             }
         }
 

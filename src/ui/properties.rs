@@ -1,6 +1,13 @@
+use crate::filesystem::metadata;
+use crate::filesystem::traversal::{self, FolderSize};
+use crate::ui::file_list;
 use crate::ui::item_object::ItemObject;
+use gtk::glib;
 use gtk::prelude::*;
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub fn show(parent: &gtk::ApplicationWindow, item: &ItemObject) {
     let window = gtk::Window::builder()
@@ -11,10 +18,14 @@ pub fn show(parent: &gtk::ApplicationWindow, item: &ItemObject) {
         .default_height(540)
         .build();
 
+    // Raised when the window closes, so measuring a huge folder stops
+    // instead of grinding on with nobody left to read the answer.
+    let cancel = Arc::new(AtomicBool::new(false));
+
     let notebook = gtk::Notebook::new();
 
     notebook.append_page(
-        &build_general_tab(item),
+        &build_general_tab(item, &cancel),
         Some(&gtk::Label::new(Some("General"))),
     );
 
@@ -28,15 +39,114 @@ pub fn show(parent: &gtk::ApplicationWindow, item: &ItemObject) {
         Some(&gtk::Label::new(Some("Open With"))),
     );
 
+    {
+        let cancel = cancel.clone();
+
+        window.connect_close_request(move |_| {
+            cancel.store(true, Ordering::Relaxed);
+            glib::Propagation::Proceed
+        });
+    }
+
     window.set_child(Some(&notebook));
     window.present();
+}
+
+/// Properties for several items at once: how many of each kind, their
+/// combined size (folders are measured in the background, so the dialog
+/// opens instantly), and one row per item.
+pub fn show_selection(parent: &gtk::ApplicationWindow, items: &[ItemObject]) {
+    let title = format!("Properties \u{2014} {} items", items.len());
+
+    let window = gtk::Window::builder()
+        .title(title.as_str())
+        .transient_for(parent)
+        .modal(true)
+        .default_width(460)
+        .default_height(540)
+        .build();
+
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    vbox.set_margin_top(16);
+    vbox.set_margin_bottom(16);
+    vbox.set_margin_start(16);
+    vbox.set_margin_end(16);
+
+    let folders = items.iter().filter(|item| item.is_dir()).count();
+    let files = items.len() - folders;
+
+    let summary = gtk::Label::new(Some(&format!(
+        "{} selected: {}, {}",
+        items.len(),
+        count_noun(files, "file", "files"),
+        count_noun(folders, "folder", "folders"),
+    )));
+    summary.set_halign(gtk::Align::Start);
+    summary.add_css_class("heading");
+
+    let total_label = gtk::Label::new(Some("Total size: calculating\u{2026}"));
+    total_label.set_halign(gtk::Align::Start);
+
+    let list = gtk::ListBox::new();
+    list.set_selection_mode(gtk::SelectionMode::None);
+
+    for item in items {
+        let row = gtk::ListBoxRow::new();
+        row.set_child(Some(&file_list::render_file_row(item)));
+        list.append(&row);
+    }
+
+    let scrolled = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .build();
+    scrolled.set_child(Some(&list));
+    scrolled.set_vexpand(true);
+
+    vbox.append(&summary);
+    vbox.append(&total_label);
+    vbox.append(&scrolled);
+
+    window.set_child(Some(&vbox));
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
+    let receiver = traversal::spawn_folder_size_job(paths, cancel.clone());
+
+    glib::MainContext::default().spawn_local(async move {
+        if let Ok(total) = receiver.recv().await {
+            total_label.set_label(&format!("Total size: {}", describe_size(total)));
+        }
+    });
+
+    window.connect_close_request(move |_| {
+        cancel.store(true, Ordering::Relaxed);
+        glib::Propagation::Proceed
+    });
+
+    window.present();
+}
+
+/// "1 file", "3 files".
+fn count_noun(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count == 1 { singular } else { plural })
+}
+
+/// "1.2 GB (341 files, 22 folders)".
+fn describe_size(size: FolderSize) -> String {
+    format!(
+        "{} ({}, {})",
+        metadata::format_size(size.bytes),
+        count_noun(size.files as usize, "file", "files"),
+        count_noun(size.folders as usize, "folder", "folders"),
+    )
 }
 
 // ============================================================================
 // GENERAL
 // ============================================================================
 
-fn build_general_tab(item: &ItemObject) -> gtk::Widget {
+fn build_general_tab(item: &ItemObject, cancel: &Arc<AtomicBool>) -> gtk::Widget {
     let grid = gtk::Grid::new();
     grid.set_margin_top(16);
     grid.set_margin_bottom(16);
@@ -55,10 +165,22 @@ fn build_general_tab(item: &ItemObject) -> gtk::Widget {
         .map(|p| p.display().to_string())
         .unwrap_or_default();
 
+    // A folder's own "size" is just the directory entry (the "-" the file
+    // views show); what people mean is everything inside it, which takes a
+    // walk of the tree -- so start it in the background and fill the number
+    // in when it arrives.
+    let is_folder = item.is_dir();
+
+    let size_text = if is_folder {
+        "Calculating\u{2026}".to_string()
+    } else {
+        item.size_str()
+    };
+
     let rows: Vec<(&str, String)> = vec![
         ("Name", item.name()),
         ("Type", item.mime_type()),
-        ("Size", item.size_str()),
+        ("Size", size_text),
         ("Location", location),
         ("Modified", item.modified_str()),
         (
@@ -71,6 +193,8 @@ fn build_general_tab(item: &ItemObject) -> gtk::Widget {
         ),
     ];
 
+    let mut size_value: Option<gtk::Label> = None;
+
     let mut row = 1;
     for (label_text, value) in rows {
         let l = gtk::Label::new(Some(label_text));
@@ -82,9 +206,23 @@ fn build_general_tab(item: &ItemObject) -> gtk::Widget {
         v.set_wrap(true);
         v.set_selectable(true);
 
+        if is_folder && label_text == "Size" {
+            size_value = Some(v.clone());
+        }
+
         grid.attach(&l, 0, row, 1, 1);
         grid.attach(&v, 1, row, 1, 1);
         row += 1;
+    }
+
+    if let Some(size_label) = size_value {
+        let receiver = traversal::spawn_folder_size_job(vec![path.clone()], cancel.clone());
+
+        glib::MainContext::default().spawn_local(async move {
+            if let Ok(total) = receiver.recv().await {
+                size_label.set_label(&describe_size(total));
+            }
+        });
     }
 
     grid.upcast::<gtk::Widget>()

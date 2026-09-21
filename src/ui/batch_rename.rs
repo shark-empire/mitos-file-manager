@@ -1,12 +1,45 @@
-use crate::operations::batch_rename;
+use crate::operations::{self, batch_rename};
 use crate::ui::dialogs;
 use gtk::prelude::*;
 use gtk::{
     ApplicationWindow, Box as GtkBox, Button, Entry, Label, ListBox, ListBoxRow, Orientation,
     ScrolledWindow, SelectionMode, SpinButton,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+/// What one item would be renamed to under the current pattern.
+struct PlannedRename {
+    old_name: String,
+    new_name: String,
+    source: PathBuf,
+    target: PathBuf,
+}
+
+/// Work out every new name for `items` (`(current name, full path)` pairs).
+///
+/// Each item is renamed *within its own folder*. That matters when the
+/// selection came from a recursive search and spans several folders: joining
+/// every new name onto the first item's folder would quietly move files
+/// between directories.
+fn plan_renames(items: &[(String, PathBuf)], pattern: &str, start_number: u64) -> Vec<PlannedRename> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, (name, path))| {
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            let new_name =
+                batch_rename::compute_new_name(pattern, index, start_number, name, parent);
+
+            PlannedRename {
+                old_name: name.clone(),
+                target: parent.join(&new_name),
+                new_name,
+                source: path.clone(),
+            }
+        })
+        .collect()
+}
 
 pub fn show<F>(parent: &ApplicationWindow, items: Vec<(String, PathBuf)>, on_apply: F)
 where
@@ -31,7 +64,9 @@ where
 
     let pattern_label = Label::new(Some("Pattern:"));
     let pattern_entry = Entry::new();
-    pattern_entry.set_text("Photo_{000}");
+    // `{ext}` matters: without it every file would lose its extension the
+    // moment Apply is pressed.
+    pattern_entry.set_text("Photo_{000}{ext}");
     pattern_entry.set_hexpand(true);
 
     pattern_box.append(&pattern_label);
@@ -68,6 +103,7 @@ where
 
     // Buttons
     let button_box = GtkBox::new(Orientation::Horizontal, 8);
+    button_box.set_halign(gtk::Align::End);
 
     let cancel_btn = Button::with_label("Cancel");
     let apply_btn = Button::with_label("Apply Rename");
@@ -103,26 +139,9 @@ where
             let pattern = pattern_entry.text().to_string();
             let start_number = number_spin.value() as u64;
 
-            let parent_dir = items
-                .first()
-                .and_then(|(_, path)| path.parent().map(|p| p.to_path_buf()))
-                .unwrap_or_else(|| PathBuf::from("."));
+            let planned = plan_renames(&items, &pattern, start_number);
 
-            let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
-
-            for (index, (name, path)) in items.iter().enumerate() {
-                let new_name = batch_rename::compute_new_name(
-                    &pattern,
-                    index,
-                    start_number,
-                    name,
-                    &parent_dir,
-                );
-
-                let new_path = parent_dir.join(&new_name);
-
-                renames.push((path.clone(), new_path.clone()));
-
+            for plan in &planned {
                 let row = ListBoxRow::new();
                 let row_box = GtkBox::new(Orientation::Horizontal, 6);
 
@@ -131,7 +150,7 @@ where
                 row_box.set_margin_start(6);
                 row_box.set_margin_end(6);
 
-                let text = format!("{}  →  {}", name, new_name);
+                let text = format!("{}  →  {}", plan.old_name, plan.new_name);
                 let label = Label::new(Some(&text));
                 label.set_halign(gtk::Align::Start);
                 label.set_wrap(true);
@@ -142,6 +161,11 @@ where
             }
 
             // Show warnings if any.
+            let renames: Vec<(PathBuf, PathBuf)> = planned
+                .iter()
+                .map(|plan| (plan.source.clone(), plan.target.clone()))
+                .collect();
+
             let warnings = batch_rename::validate_renames(&renames);
 
             if !warnings.is_empty() {
@@ -202,30 +226,26 @@ where
             let pattern = pattern_entry.text().to_string();
             let start_number = number_spin.value() as u64;
 
-            let parent_dir = items
-                .first()
-                .and_then(|(_, path)| path.parent().map(|p| p.to_path_buf()))
-                .unwrap_or_else(|| PathBuf::from("."));
+            let planned = plan_renames(&items, &pattern, start_number);
 
-            let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
-
-            for (index, (name, path)) in items.iter().enumerate() {
-                let new_name = batch_rename::compute_new_name(
-                    &pattern,
-                    index,
-                    start_number,
-                    name,
-                    &parent_dir,
-                );
-
-                if new_name.is_empty() {
-                    dialogs::show_error(&parent_window, "Pattern produced an empty filename.");
+            // The pattern is user-typed text that becomes a file name, so it
+            // gets the same check as every other place that happens --
+            // empty names and anything with a "/" in it are refused rather
+            // than turned into a move to somewhere else.
+            for plan in &planned {
+                if let Err(err) = operations::validate_name(&plan.new_name) {
+                    dialogs::show_error(
+                        &parent_window,
+                        &format!("\"{}\" can't be used as a name: {err}", plan.new_name),
+                    );
                     return;
                 }
-
-                let new_path = parent_dir.join(&new_name);
-                renames.push((path.clone(), new_path));
             }
+
+            let renames: Vec<(PathBuf, PathBuf)> = planned
+                .into_iter()
+                .map(|plan| (plan.source, plan.target))
+                .collect();
 
             let warnings = batch_rename::validate_renames(&renames);
 

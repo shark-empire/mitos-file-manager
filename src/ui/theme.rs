@@ -22,21 +22,44 @@ impl ThemeMode {
     }
 }
 
-pub fn apply_theme(display: &gdk::Display, mode: ThemeMode) {
-    let provider = gtk::CssProvider::new();
+thread_local! {
+    // The one CSS provider this process ever registers. GTK's `add_provider`
+    // has no "replace": every call stacks another provider (and its parsed
+    // stylesheet) on the display for good, and the theme is re-applied on
+    // every settings change and every shared-config file write. Keeping the
+    // provider and just reloading its contents in place means a session of
+    // theme flips costs one stylesheet, not one per flip.
+    static THEME_PROVIDER: std::cell::RefCell<Option<gtk::CssProvider>> =
+        std::cell::RefCell::new(None);
+}
 
+pub fn apply_theme(display: &gdk::Display, mode: ThemeMode) {
     let css = match mode {
         ThemeMode::Light => light_theme_css(),
         ThemeMode::Dark => dark_theme_css(),
     };
 
-    provider.load_from_string(&css);
+    THEME_PROVIDER.with(|slot| {
+        let mut slot = slot.borrow_mut();
 
-    gtk::style_context_add_provider_for_display(
-        display,
-        &provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+        // Already registered: swapping the text makes GTK restyle every
+        // widget on its own.
+        if let Some(provider) = slot.as_ref() {
+            provider.load_from_string(&css);
+            return;
+        }
+
+        let provider = gtk::CssProvider::new();
+        provider.load_from_string(&css);
+
+        gtk::style_context_add_provider_for_display(
+            display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+
+        *slot = Some(provider);
+    });
 }
 
 fn light_theme_css() -> String {
