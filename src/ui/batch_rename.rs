@@ -22,7 +22,11 @@ struct PlannedRename {
 /// selection came from a recursive search and spans several folders: joining
 /// every new name onto the first item's folder would quietly move files
 /// between directories.
-fn plan_renames(items: &[(String, PathBuf)], pattern: &str, start_number: u64) -> Vec<PlannedRename> {
+fn plan_renames(
+    items: &[(String, PathBuf)],
+    pattern: &str,
+    start_number: u64,
+) -> Vec<PlannedRename> {
     items
         .iter()
         .enumerate()

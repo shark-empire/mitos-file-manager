@@ -155,10 +155,8 @@ pub fn build(initial_path: PathBuf) -> SplitPane {
                     // Files open in their default application, same as in
                     // the main view.
                     let uri = gio::File::for_path(&item.path).uri();
-                    let _ = gio::AppInfo::launch_default_for_uri(
-                        &uri,
-                        None::<&gio::AppLaunchContext>,
-                    );
+                    let _ =
+                        gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>);
                 }
             }
         });
