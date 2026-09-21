@@ -1,5 +1,6 @@
 use std::fs;
-use std::path::PathBuf;
+use gtk::prelude::*;
+use std::path::{Path, PathBuf};
 
 /// Read the XDG recently-used database and return existing
 /// file paths, newest first.
@@ -23,7 +24,7 @@ pub fn recent_files(limit: usize) -> Vec<PathBuf> {
             continue;
         };
 
-        let path = PathBuf::from(url_decode(local));
+        let path = PathBuf::from(crate::util::percent_decode(local));
 
         if path.exists() && !paths.contains(&path) {
             paths.push(path);
@@ -43,28 +44,19 @@ fn extract_href(line: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn url_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
+/// Tell the desktop's recently-used list that `path` was just opened, so it
+/// appears in this app's sidebar "Recent" section (and in other
+/// applications' "recent files" menus). Best effort: the list is written
+/// out later, from the main loop.
+pub fn record(path: &Path) {
+    let uri = gtk::gio::File::for_path(path).uri();
 
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-
-        out.push(bytes[i]);
-        i += 1;
-    }
-
-    String::from_utf8_lossy(&out).to_string()
+    gtk::RecentManager::default().add_item(&uri);
 }
 
-fn xbel_path() -> Option<PathBuf> {
+/// Where the desktop's recently-used list lives (also watched, cheaply, to
+/// know when the sidebar's "Recent" section is out of date).
+pub fn xbel_path() -> Option<PathBuf> {
     if let Ok(data) = std::env::var("XDG_DATA_HOME") {
         if !data.is_empty() {
             return Some(PathBuf::from(data).join("recently-used.xbel"));

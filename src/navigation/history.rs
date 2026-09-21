@@ -74,6 +74,67 @@ impl History {
         Some(previous)
     }
 
+    /// The folders Back would visit, nearest first -- for a "history" menu.
+    /// Only folders that still exist are listed, which is exactly the set
+    /// `go_back` steps through, so entry N really is N + 1 steps back.
+    pub fn back_entries(&self) -> Vec<PathBuf> {
+        self.back_stack
+            .iter()
+            .rev()
+            .filter(|path| path.is_dir())
+            .cloned()
+            .collect()
+    }
+
+    /// The folders Forward would visit, nearest first.
+    pub fn forward_entries(&self) -> Vec<PathBuf> {
+        self.forward_stack
+            .iter()
+            .rev()
+            .filter(|path| path.is_dir())
+            .cloned()
+            .collect()
+    }
+
+    /// Go back `steps` places at once (picking an older entry from the
+    /// history menu). Everything passed on the way becomes Forward history,
+    /// exactly as if Back had been pressed `steps` times. Lands as far back
+    /// as it can if there aren't that many.
+    pub fn jump_back(&mut self, steps: usize, current: &PathBuf) -> Option<PathBuf> {
+        let mut here = current.clone();
+        let mut landed = None;
+
+        for _ in 0..steps.max(1) {
+            match self.go_back(&here) {
+                Some(previous) => {
+                    here = previous.clone();
+                    landed = Some(previous);
+                }
+                None => break,
+            }
+        }
+
+        landed
+    }
+
+    /// `jump_back`, the other way.
+    pub fn jump_forward(&mut self, steps: usize, current: &PathBuf) -> Option<PathBuf> {
+        let mut here = current.clone();
+        let mut landed = None;
+
+        for _ in 0..steps.max(1) {
+            match self.go_forward(&here) {
+                Some(next) => {
+                    here = next.clone();
+                    landed = Some(next);
+                }
+                None => break,
+            }
+        }
+
+        landed
+    }
+
     /// Step forward again after a `go_back`, skipping places that no longer
     /// exist the same way.
     pub fn go_forward(&mut self, current: &PathBuf) -> Option<PathBuf> {
@@ -154,6 +215,43 @@ mod tests {
 
         assert_eq!(history.go_back(&c), Some(a));
         assert!(!history.can_go_back());
+    }
+
+    #[test]
+    fn the_history_menu_lists_existing_folders_nearest_first() {
+        let (a, b, c) = three_dirs("history-entries");
+        let mut history = History::new();
+
+        history.push(a.clone());
+        history.push(b.clone());
+        assert_eq!(history.back_entries(), vec![b.clone(), a.clone()]);
+
+        // Vanished folders aren't offered.
+        fs::remove_dir_all(&a).unwrap();
+        assert_eq!(history.back_entries(), vec![b.clone()]);
+
+        assert_eq!(history.go_back(&c), Some(b.clone()));
+        assert_eq!(history.forward_entries(), vec![c]);
+    }
+
+    #[test]
+    fn jumping_back_several_steps_keeps_forward_working() {
+        let (a, b, c) = three_dirs("history-jump");
+        let mut history = History::new();
+
+        // a -> b -> c, now standing in c.
+        history.push(a.clone());
+        history.push(b.clone());
+
+        assert_eq!(history.jump_back(2, &c), Some(a.clone()));
+        assert!(!history.can_go_back());
+        assert_eq!(history.forward_entries(), vec![b.clone(), c.clone()]);
+
+        // And forward the whole way in one go.
+        assert_eq!(history.jump_forward(2, &a), Some(c.clone()));
+
+        // Asking for more steps than exist lands as far back as possible.
+        assert_eq!(history.jump_back(9, &c), Some(a));
     }
 
     #[test]
