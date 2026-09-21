@@ -1,7 +1,9 @@
 // src/ui/mod.rs
 pub mod accessibility;
 pub mod batch_rename;
+pub mod clipboard;
 pub mod dialogs;
+pub mod dnd;
 pub mod file_list;
 pub mod grid_view;
 pub mod item_object;

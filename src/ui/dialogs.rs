@@ -97,6 +97,62 @@ pub fn show_text_dialog<F>(
     dialog.window.present();
 }
 
+/// Ask a yes/no question without blocking: `on_accept` runs only if the user
+/// presses the confirm button, and Cancel (or closing the window) does
+/// nothing. `destructive` paints the confirm button red -- for deleting
+/// things, where the safe answer is the one that should look calm.
+///
+/// This deliberately doesn't spin a nested main loop (unlike
+/// `choose_conflict_policy`): it's called from inside signal handlers and
+/// async callbacks, where re-entering the main loop is asking for trouble.
+pub fn confirm_then<F>(
+    parent: &impl IsA<gtk::Window>,
+    title: &str,
+    message: &str,
+    accept_label: &str,
+    destructive: bool,
+    on_accept: F,
+) where
+    F: Fn() + 'static,
+{
+    let dialog = build_dialog(parent, title);
+
+    let label = Label::new(Some(message));
+    label.set_wrap(true);
+    label.set_max_width_chars(60);
+    label.set_halign(gtk::Align::Start);
+    dialog.content.append(&label);
+
+    let cancel_btn = dialog_button(&dialog.button_row, "Cancel");
+    let accept_btn = dialog_button(&dialog.button_row, accept_label);
+    accept_btn.add_css_class(if destructive {
+        "destructive-action"
+    } else {
+        "suggested-action"
+    });
+
+    {
+        let window = dialog.window.clone();
+        cancel_btn.connect_clicked(move |_| window.close());
+    }
+
+    {
+        let window = dialog.window.clone();
+        accept_btn.connect_clicked(move |_| {
+            window.close();
+            on_accept();
+        });
+    }
+
+    // Enter shouldn't confirm a destructive action by accident, so only a
+    // non-destructive dialog makes its confirm button the default.
+    if !destructive {
+        dialog.window.set_default_widget(Some(&accept_btn));
+    }
+
+    dialog.window.present();
+}
+
 pub fn show_error(parent: &impl IsA<gtk::Window>, message: &str) {
     let dialog = build_dialog(parent, "Error");
 
@@ -236,6 +292,32 @@ where
     dialog.content.append(&label);
     dialog.content.append(&entry);
 
+    // Servers connected to before: one click fills the box.
+    let recent_servers = crate::navigation::servers::load();
+
+    if !recent_servers.is_empty() {
+        let recent_label = Label::new(Some("Recent servers"));
+        recent_label.set_halign(gtk::Align::Start);
+        recent_label.add_css_class("dim-label");
+        dialog.content.append(&recent_label);
+
+        for uri in recent_servers {
+            let button = gtk::Button::with_label(&uri);
+            button.set_has_frame(false);
+            button.set_halign(gtk::Align::Start);
+
+            let entry = entry.clone();
+
+            button.connect_clicked(move |clicked| {
+                if let Some(label) = clicked.label() {
+                    entry.set_text(&label);
+                }
+            });
+
+            dialog.content.append(&button);
+        }
+    }
+
     let cancel_btn = dialog_button(&dialog.button_row, "Cancel");
     let connect_btn = dialog_button(&dialog.button_row, "Connect");
     connect_btn.add_css_class("suggested-action");
@@ -258,6 +340,7 @@ where
                 return;
             }
 
+            let uri_to_remember = uri.clone();
             let file = gio::File::for_uri(&uri);
             let file_for_result = file.clone();
             let mount_op = gtk::MountOperation::new(Some(&parent));
@@ -279,6 +362,10 @@ where
                             return;
                         }
                     }
+
+                    // It worked (or was already mounted): keep the address for
+                    // next time, minus any password.
+                    crate::navigation::servers::remember(&uri_to_remember);
 
                     if let Some(path) = file_for_result.path() {
                         on_connected(path);

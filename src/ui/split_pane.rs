@@ -1,16 +1,23 @@
 use crate::filesystem::directory;
 use crate::ui::grid_view;
+use crate::ui::item_object::ItemObject;
 use gtk::gio;
+use gtk::glib;
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Button, GridView, Label, Orientation, ScrolledWindow};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+/// How many folders the pane's own Back button remembers.
+const MAX_HISTORY: usize = 100;
+
 pub struct SplitPaneState {
     pub current: PathBuf,
     pub history: Vec<PathBuf>,
-    pub items: Vec<directory::Item>,
+    /// Bumped by every refresh: a listing that finishes after a newer one
+    /// started is for a folder the pane has already left, and is dropped.
+    pub load_generation: u64,
 }
 
 impl SplitPaneState {
@@ -18,7 +25,7 @@ impl SplitPaneState {
         Self {
             current: path,
             history: Vec::new(),
-            items: Vec::new(),
+            load_generation: 0,
         }
     }
 }
@@ -35,12 +42,10 @@ pub struct SplitPane {
 impl SplitPane {
     /// Paths of whatever is selected in this pane's grid, in display order.
     pub fn selected_paths(&self) -> Vec<PathBuf> {
-        let state = self.state.borrow();
-
         (0..self.store.n_items())
             .filter(|&position| self.selection.is_selected(position))
-            .filter_map(|position| state.items.get(position as usize))
-            .map(|item| item.path.clone())
+            .filter_map(|position| self.store.item(position).and_downcast::<ItemObject>())
+            .map(|item| item.get_path())
             .collect()
     }
 
@@ -53,6 +58,17 @@ impl SplitPane {
     /// Move keyboard focus into the pane's file grid.
     pub fn focus_grid(&self) {
         self.grid.grab_focus();
+    }
+}
+
+/// Remember `old` as somewhere the pane's Back button can return to.
+fn remember(state: &Rc<RefCell<SplitPaneState>>, old: PathBuf) {
+    let mut s = state.borrow_mut();
+
+    s.history.push(old);
+
+    if s.history.len() > MAX_HISTORY {
+        s.history.remove(0);
     }
 }
 
@@ -126,7 +142,7 @@ pub fn build(initial_path: PathBuf) -> SplitPane {
 
             if let Some(parent) = parent {
                 let old = state.borrow().current.clone();
-                state.borrow_mut().history.push(old);
+                remember(&state, old);
                 state.borrow_mut().current = parent;
                 refresh_pane(&state, &store, &location_label);
             }
@@ -140,24 +156,26 @@ pub fn build(initial_path: PathBuf) -> SplitPane {
         let location_label = location_label.clone();
 
         grid.connect_activate(move |_, pos| {
-            let item = {
-                let s = state.borrow();
-                s.items.get(pos as usize).cloned()
+            // The row's file comes straight from the store: the pane keeps
+            // no second copy of the listing.
+            let Some(item) = store.item(pos).and_downcast::<ItemObject>() else {
+                return;
             };
 
-            if let Some(item) = item {
-                if item.is_dir {
-                    let old = state.borrow().current.clone();
-                    state.borrow_mut().history.push(old);
-                    state.borrow_mut().current = item.path.clone();
-                    refresh_pane(&state, &store, &location_label);
-                } else {
-                    // Files open in their default application, same as in
-                    // the main view.
-                    let uri = gio::File::for_path(&item.path).uri();
-                    let _ =
-                        gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>);
-                }
+            let path = item.get_path();
+
+            if item.is_dir() {
+                let old = state.borrow().current.clone();
+                remember(&state, old);
+                state.borrow_mut().current = path;
+                refresh_pane(&state, &store, &location_label);
+            } else {
+                // Files open in their default application, same as in
+                // the main view.
+                let uri = gio::File::for_path(&path).uri();
+                let _ =
+                    gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>);
+                crate::navigation::recent::record(&path);
             }
         });
     }
@@ -180,20 +198,49 @@ pub fn build(initial_path: PathBuf) -> SplitPane {
     }
 }
 
+/// Show the pane's current folder. Like the main view, the listing is read
+/// on a worker thread and poured into the grid in chunks, so a huge folder
+/// doesn't freeze the window.
 pub fn refresh_pane(
     state: &Rc<RefCell<SplitPaneState>>,
     store: &gio::ListStore,
     location_label: &Label,
 ) {
-    let mut s = state.borrow_mut();
-    let current = s.current.clone();
+    let (current, generation) = {
+        let mut s = state.borrow_mut();
+        s.load_generation += 1;
+
+        (s.current.clone(), s.load_generation)
+    };
 
     location_label.set_label(&current.display().to_string());
 
-    let items = directory::read_items(&current, false);
-    grid_view::render(store, &items);
+    let (sender, receiver) = async_channel::bounded::<Vec<directory::Item>>(1);
 
-    s.items = items;
+    std::thread::spawn(move || {
+        let _ = sender.send_blocking(directory::read_items(&current, false));
+    });
+
+    let state = state.clone();
+    let store = store.clone();
+
+    glib::MainContext::default().spawn_local(async move {
+        let Ok(items) = receiver.recv().await else {
+            return;
+        };
+
+        // The pane moved on while this was loading.
+        if state.borrow().load_generation != generation {
+            return;
+        }
+
+        let still_current = {
+            let state = state.clone();
+            move || state.borrow().load_generation == generation
+        };
+
+        grid_view::render_progressive(&store, items, still_current);
+    });
 }
 
 pub fn navigate_to(
@@ -209,7 +256,7 @@ pub fn navigate_to(
     let old = state.borrow().current.clone();
 
     if old != path {
-        state.borrow_mut().history.push(old);
+        remember(state, old);
         state.borrow_mut().current = path;
         refresh_pane(state, store, location_label);
     }

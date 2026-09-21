@@ -1,11 +1,12 @@
+use crate::filesystem::access;
 use crate::filesystem::metadata;
 use crate::filesystem::traversal::{self, FolderSize};
 use crate::ui::file_list;
 use crate::ui::item_object::ItemObject;
 use gtk::glib;
 use gtk::prelude::*;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -177,12 +178,24 @@ fn build_general_tab(item: &ItemObject, cancel: &Arc<AtomicBool>) -> gtk::Widget
         item.size_str()
     };
 
-    let rows: Vec<(&str, String)> = vec![
+    let details = extra_details(&path);
+
+    let mut rows: Vec<(&str, String)> = vec![
         ("Name", item.name()),
         ("Type", item.mime_type()),
         ("Size", size_text),
         ("Location", location),
         ("Modified", item.modified_str()),
+        ("Accessed", details.accessed),
+        ("Created", details.created),
+        ("Owner", details.owner),
+        ("Group", details.group),
+        (
+            "Permissions",
+            format!("{} ({})", item.permissions(), details.octal),
+        ),
+        // What *you* may do -- which the permission string alone can't say.
+        ("You can", details.access),
         (
             "Symlink",
             if item.is_symlink() {
@@ -192,6 +205,10 @@ fn build_general_tab(item: &ItemObject, cancel: &Arc<AtomicBool>) -> gtk::Widget
             },
         ),
     ];
+
+    if let Some(target) = details.link_target {
+        rows.push(("Link target", target));
+    }
 
     let mut size_value: Option<gtk::Label> = None;
 
@@ -226,6 +243,58 @@ fn build_general_tab(item: &ItemObject, cancel: &Arc<AtomicBool>) -> gtk::Widget
     }
 
     grid.upcast::<gtk::Widget>()
+}
+
+/// The properties that need more than the listing already knows: who owns
+/// the file, when it was last opened and created, where a link points, and
+/// what the current user is actually allowed to do with it.
+struct ExtraDetails {
+    owner: String,
+    group: String,
+    /// Permission bits in octal ("755", or "4755" with a setuid bit).
+    octal: String,
+    accessed: String,
+    created: String,
+    link_target: Option<String>,
+    access: String,
+}
+
+fn extra_details(path: &Path) -> ExtraDetails {
+    let metadata = std::fs::symlink_metadata(path).ok();
+
+    let owner = metadata
+        .as_ref()
+        .map(|m| access::user_name(m.uid()))
+        .unwrap_or_else(|| "-".to_string());
+
+    let group = metadata
+        .as_ref()
+        .map(|m| access::group_name(m.gid()))
+        .unwrap_or_else(|| "-".to_string());
+
+    let octal = metadata
+        .as_ref()
+        .map(|m| format!("{:o}", m.mode() & 0o7777))
+        .unwrap_or_else(|| "-".to_string());
+
+    let accessed = metadata::format_modified(metadata.as_ref().and_then(|m| m.accessed().ok()));
+
+    // Not every filesystem records a creation ("birth") time.
+    let created = metadata::format_modified(metadata.as_ref().and_then(|m| m.created().ok()));
+
+    let link_target = std::fs::read_link(path)
+        .ok()
+        .map(|target| target.display().to_string());
+
+    ExtraDetails {
+        owner,
+        group,
+        octal,
+        accessed,
+        created,
+        link_target,
+        access: access::effective_access(path).describe(),
+    }
 }
 
 // ============================================================================
@@ -421,4 +490,61 @@ fn build_open_with_tab(window: &gtk::Window, item: &ItemObject) -> gtk::Widget {
     vbox.append(&status);
 
     vbox.upcast::<gtk::Widget>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::test_support::scratch_dir;
+    use std::fs;
+
+    #[test]
+    fn details_report_owner_mode_and_access() {
+        let dir = scratch_dir("props-details");
+        let file = dir.join("script.sh");
+        fs::write(&file, "#!/bin/sh").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+
+        let details = extra_details(&file);
+
+        assert_eq!(details.octal, "640");
+        assert!(!details.owner.is_empty() && details.owner != "-");
+        assert!(!details.group.is_empty() && details.group != "-");
+        assert!(details.access.contains("read"));
+        assert!(details.link_target.is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_symlink_shows_where_it_points() {
+        let dir = scratch_dir("props-link");
+        let target = dir.join("real.txt");
+        fs::write(&target, "x").unwrap();
+        let link = dir.join("alias");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert_eq!(
+            extra_details(&link).link_target,
+            Some(target.display().to_string())
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_path_degrades_to_placeholders() {
+        let details = extra_details(Path::new("/no/such/file"));
+
+        assert_eq!(details.owner, "-");
+        assert_eq!(details.octal, "-");
+        assert_eq!(details.access, "no access");
+    }
+
+    #[test]
+    fn counts_are_worded_correctly() {
+        assert_eq!(count_noun(1, "file", "files"), "1 file");
+        assert_eq!(count_noun(0, "file", "files"), "0 files");
+        assert_eq!(count_noun(7, "folder", "folders"), "7 folders");
+    }
 }

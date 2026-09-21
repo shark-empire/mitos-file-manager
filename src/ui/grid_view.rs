@@ -3,8 +3,12 @@ use gtk::glib;
 use gtk::prelude::*;
 
 use crate::filesystem::directory::Item;
+use crate::mime::thumbnail;
 use crate::ui::item_object::ItemObject;
 use crate::util::{get_obj_data, set_obj_data, take_obj_data};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 pub fn create_model() -> (gio::ListStore, gtk::MultiSelection) {
     let store = gio::ListStore::new::<ItemObject>();
@@ -122,28 +126,12 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
 
         set_obj_data(item, "thumbnail-signal-handler", handler_id);
 
-        // Images either already have a cached thumbnail or can be shown
-        // directly (both handled synchronously in `thumbnail_path_for`),
-        // but videos need a frame pulled out with `ffmpeg`, which is too
-        // slow to do while populating the folder. Kick that off now and
-        // let the `notify` handler above pick up the result -- via a weak
-        // ref, so a video that's scrolled away/navigated away from before
-        // `ffmpeg` finishes doesn't keep the row's `ItemObject` alive.
-        if item_obj.thumbnail_path().is_empty() && item_obj.mime_type().starts_with("video/") {
-            let rx = crate::mime::thumbnail::spawn_video_thumbnail_job(
-                item_obj.get_path(),
-                item_obj.mime_type(),
-            );
-            let item_obj_weak = item_obj.downgrade();
-
-            glib::MainContext::default().spawn_local(async move {
-                if let Ok(Some(cache_path)) = rx.recv().await {
-                    if let Some(item_obj) = item_obj_weak.upgrade() {
-                        item_obj.set_thumbnail_path(cache_path);
-                    }
-                }
-            });
-        }
+        // Thumbnails are worked out here, lazily, for the rows that are
+        // actually on screen -- not for every file when a big folder is
+        // listed. A cached one is picked up at once; otherwise it's made on
+        // a background worker and the `notify` handler above swaps it in
+        // when it arrives.
+        request_thumbnail_if_needed(item, &item_obj);
     });
 
     factory.connect_unbind(move |_, item| {
@@ -160,6 +148,12 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
         {
             item_obj.disconnect(handler_id);
         }
+
+        // This row is about to show something else: tell the worker not to
+        // bother finishing a thumbnail nobody is looking at any more.
+        if let Some(cancel) = take_obj_data::<_, Arc<AtomicBool>>(item, "thumbnail-cancel") {
+            cancel.store(true, Ordering::Relaxed);
+        }
     });
 
     let grid_view = gtk::GridView::new(Some(selection.clone()), Some(factory));
@@ -171,12 +165,119 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
     grid_view
 }
 
-pub fn render(store: &gio::ListStore, items: &[Item]) {
-    store.remove_all();
-
-    for item in items {
-        store.append(&ItemObject::new(item));
+/// Look up -- or ask a background worker to make -- the thumbnail for the
+/// file in `item`'s row, if it wants one. Cheap when there's nothing to do.
+fn request_thumbnail_if_needed(item: &gtk::ListItem, item_obj: &ItemObject) {
+    if !item_obj.thumbnail_path().is_empty() || item_obj.is_dir() {
+        return;
     }
+
+    // A file nothing could make a thumbnail for isn't asked again every
+    // time it scrolls back into view.
+    if get_obj_data::<_, bool>(item_obj, "thumbnail-failed").unwrap_or(false) {
+        return;
+    }
+
+    let mime = item_obj.mime_type();
+
+    if !thumbnail::wants_thumbnail(&mime, item_obj.size()) {
+        return;
+    }
+
+    let path = item_obj.get_path();
+
+    let cached = thumbnail::thumbnail_path_for(&path);
+
+    if !cached.is_empty() {
+        item_obj.set_thumbnail_path(cached);
+        return;
+    }
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    set_obj_data(item, "thumbnail-cancel", cancel.clone());
+
+    let receiver = thumbnail::request_thumbnail(path, mime, cancel.clone());
+
+    // Weak, so a row that scrolls away before the worker finishes doesn't
+    // keep its `ItemObject` alive.
+    let item_obj_weak = item_obj.downgrade();
+
+    glib::MainContext::default().spawn_local(async move {
+        let Ok(result) = receiver.recv().await else {
+            return;
+        };
+
+        // The row scrolled away first: the worker gave up on purpose, which
+        // says nothing about whether the file can be thumbnailed.
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let Some(item_obj) = item_obj_weak.upgrade() else {
+            return;
+        };
+
+        match result {
+            Some(cache_path) => item_obj.set_thumbnail_path(cache_path),
+            None => set_obj_data(&item_obj, "thumbnail-failed", true),
+        }
+    });
+}
+
+/// Replace the store's contents with `items` in one go: a single
+/// `items-changed` signal (and one relayout) instead of one per item.
+pub fn render(store: &gio::ListStore, items: &[Item]) {
+    let objects: Vec<ItemObject> = items.iter().map(ItemObject::new).collect();
+
+    store.splice(0, store.n_items(), &objects);
+}
+
+/// How many rows are shown immediately, and how many are added per step
+/// after that.
+const FIRST_CHUNK: usize = 300;
+const NEXT_CHUNK: usize = 500;
+
+/// Like `render`, but for a listing that may be huge: the first screenful
+/// goes in at once so the folder appears immediately, and the rest follows
+/// in chunks from the main loop -- the window stays responsive while a
+/// 100,000-file folder fills in, instead of freezing until every row
+/// object exists. `still_current` is asked before each chunk; once it says
+/// no (the tab moved on, or a newer listing replaced this one) the
+/// remainder is dropped.
+pub fn render_progressive(
+    store: &gio::ListStore,
+    items: Vec<Item>,
+    still_current: impl Fn() -> bool + 'static,
+) {
+    let first_end = items.len().min(FIRST_CHUNK);
+    let first: Vec<ItemObject> = items[..first_end].iter().map(ItemObject::new).collect();
+
+    store.splice(0, store.n_items(), &first);
+
+    if first_end >= items.len() {
+        return;
+    }
+
+    let store = store.clone();
+    let mut cursor = first_end;
+
+    glib::timeout_add_local(Duration::from_millis(2), move || {
+        if !still_current() {
+            return glib::ControlFlow::Break;
+        }
+
+        let end = (cursor + NEXT_CHUNK).min(items.len());
+        let chunk: Vec<ItemObject> = items[cursor..end].iter().map(ItemObject::new).collect();
+
+        store.splice(store.n_items(), 0, &chunk);
+        cursor = end;
+
+        if cursor >= items.len() {
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
 }
 
 pub fn selected_items(selection: &gtk::MultiSelection, store: &gio::ListStore) -> Vec<ItemObject> {
