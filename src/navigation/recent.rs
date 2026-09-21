@@ -1,5 +1,5 @@
-use std::fs;
 use gtk::prelude::*;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Read the XDG recently-used database and return existing
