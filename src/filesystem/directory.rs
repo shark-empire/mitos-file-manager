@@ -14,6 +14,40 @@ pub struct Item {
     pub thumbnail_path: String,
 }
 
+/// Build the full `Item` -- metadata, MIME type, icon, thumbnail -- for one
+/// path. Split out of `read_items` so the search engine can pay that cost
+/// only for the entries that actually match, instead of for every file it
+/// walks past.
+pub fn item_for_path(path: PathBuf, name: String) -> Item {
+    let is_dir = path.is_dir();
+
+    let metadata = metadata::for_path(&path);
+
+    let mime = if is_dir {
+        "inode/directory".to_string()
+    } else {
+        detector::guess_mime(&path)
+    };
+
+    let icon_name = icons::icon_name_for_mime(&mime, is_dir);
+
+    let thumbnail_path = if is_dir {
+        String::new()
+    } else {
+        thumbnail::thumbnail_path_for(&path, &mime, metadata.size)
+    };
+
+    Item {
+        path,
+        name,
+        is_dir,
+        metadata,
+        mime,
+        icon_name,
+        thumbnail_path,
+    }
+}
+
 pub fn read_items(path: &Path, show_hidden: bool) -> Vec<Item> {
     let mut items = Vec::new();
 
@@ -25,34 +59,7 @@ pub fn read_items(path: &Path, show_hidden: bool) -> Vec<Item> {
                 continue;
             }
 
-            let path = entry.path();
-            let is_dir = path.is_dir();
-
-            let metadata = metadata::for_path(&path);
-
-            let mime = if is_dir {
-                "inode/directory".to_string()
-            } else {
-                detector::guess_mime(&path)
-            };
-
-            let icon_name = icons::icon_name_for_mime(&mime, is_dir);
-
-            let thumbnail_path = if is_dir {
-                String::new()
-            } else {
-                thumbnail::thumbnail_path_for(&path, &mime, metadata.size)
-            };
-
-            items.push(Item {
-                path,
-                name,
-                is_dir,
-                metadata,
-                mime,
-                icon_name,
-                thumbnail_path,
-            });
+            items.push(item_for_path(entry.path(), name));
         }
     }
 
