@@ -1,6 +1,136 @@
 # CHANGES
 
-## This session — SaveFiles portal support, and a full re-theme
+## This session -- every dead-code warning wired up, plus what that exposed
+
+Input was the CI logs: `cargo check` / `build` / `test` all passed with **35
+`dead_code` warnings** and 0 tests. Each one is now used by a real feature
+instead of being deleted. Still no compiler or display here, so this is
+hand-verified only -- the "If CI complains" list at the bottom says where to
+look first.
+
+Most of the "dead" code turned out to be half of a feature whose other half
+was missing or broken, so wiring it up also fixed the feature:
+
+**Back / Forward never worked.** `History::push` wrote to `stack`, but
+`go_back`/`go_forward` read `back_stack`/`forward_stack`, which nothing ever
+filled. Rewritten as a proper back/forward trail (capped at 100, skips
+folders that no longer exist). `pop` is the primitive `go_back` is built on;
+`clear` runs when a drive is unplugged (now for *every* tab, not just the
+visible one). Back/Forward/Up also grey out when there's nowhere to go.
+
+**Batch Rename did nothing.** The context-menu entry queued a job that renamed
+each file to *itself*; the real dialog (`ui::batch_rename::show`, with
+`compute_new_name` / `validate_renames`) was never opened. It is now. While
+wiring it: names are computed per item's own folder (a search-result
+selection spans folders), the pattern goes through `validate_name`, `{date}` /
+`{time}` use local time (UTC only as a fallback -- that's what keeps
+`current_datetime_strings` / `civil_from_days` alive), the job rolls back to
+the original names on error or cancel instead of stranding `.mitos_rename_tmp_N`
+files, staging names can't clobber a leftover, and the progress bar counts
+each rename once (it used to run to 200%). `RenameProgress::check` is what
+reads its `cancel` / `pause` fields.
+
+**Remove Bookmark didn't persist.** It did `retain` in memory only; now uses
+`bookmarks::remove`, which saves. The toolbar Bookmark button toggles too.
+
+**Search filters had no UI.** New "type" dropdown (`FileTypeFilter::all()` /
+`label()`) and a "Contents" checkbox (`match_content`) next to the search box.
+Engine changes: content search streams 64 KiB chunks (memory flat, skips
+binaries and files over 8 MiB), never follows symlinked folders (a link loop
+could recurse forever), skips dotfiles unless "Hidden" is on, builds the full
+`Item` only for matches, caps at 5000 results, and a new search cancels the
+one still running. Late results for a folder the tab has left are dropped.
+
+**Sidebar places** now come from `navigation::locations::default_places()`.
+`xdg_user_dir` reads the env override, then `~/.config/user-dirs.dirs` (via
+`dirs` -- those variables are almost never exported), then `~/<Name>`. Only
+places that exist are listed; "Computer" (/) and "Public" are new rows.
+
+**Folder sizes.** `calculate_folder_size` is now a streaming, cancellable
+walk (no path list held in memory) feeding Properties, which used to say
+"Size: -" for every folder. New multi-item Properties dialog (uses
+`render_file_row`) shows totals for a selection.
+
+**Split pane.** `SplitPane::{selected_paths, navigate, focus_grid}` read the
+`grid` / `selection` fields and call `navigate_to`. New: "Open in Split Pane"
+and "Move to Split Pane" in the context menu, a right-click menu *inside* the
+pane (open / copy / move into the active tab's folder), and files open on
+double-click there. Copy/Move to Split Pane used to run on the GTK thread,
+swallow every error and overwrite silently; it now goes through
+`operations::paste_pending` (worker thread, reports errors, never
+overwrites) -- which is also what powers the new **Duplicate** (context
+menu + Ctrl+D) and finally uses `move_path` / `remove_all`.
+
+**Error variants.** `InvalidName` comes from `operations::validate_name`
+(New Folder / New File / Rename / Batch Rename); `NotADirectory` from create,
+paste and the location bar. Fixes found on the way: New File truncated an
+existing file (`File::create`) -- now `create_new`; Rename silently replaced
+an existing file -- now refuses (case-only renames still work on FAT); New
+Folder used `create_dir_all` so `a/b/c` made a tree -- now rejected. Typing a
+file path in the location bar opens it; a bad path or a folder you can't read
+now says so instead of doing nothing (or showing a bogus empty folder).
+
+**Smaller wirings.** `PortalResponse::Error` is sent when a picked location
+has no local path (used to reply with an empty string); the three duplicated
+dialog callbacks in `main.rs` are one `portal_reply`. `JobMessage::Started.bytes`
+seeds the progress bar's first label. `DefaultsOutcome.failed` shows in
+Settings ("3 types set, 2 couldn't be changed"). `ThemeMode::as_str` feeds
+the Settings theme choice. `make_button_accessible` / `make_entry_accessible`
+replace the inline tooltip calls and now cover the checkboxes, dropdown and
+both entries. `show_info` says "Nothing to paste" instead of silently
+returning.
+
+**Other fixes, not from warnings:**
+- `apply_theme` stacked a new CSS provider on every call (each settings
+  change / `home.conf` write); it now keeps one and reloads it in place.
+- "Close Other Tabs" closed *everything* unless the kept tab was first (its
+  index was computed once, then went stale as earlier tabs closed).
+- `open_file_default` built `file://{path}` by hand, breaking on names with
+  spaces, `#`, `%`; now uses `File::uri()`.
+- Plugin commands pasted raw paths into `sh -c` (spaces broke them; a file
+  named `x; rm -rf ~` would have run). Each path is now single-quoted, and
+  the child is reaped instead of left as a zombie.
+- `unique_destination` treats a dangling symlink as taken.
+- `Taskfile.yml` had a pasted file:// URL after `cmds:` that made the whole
+  file invalid YAML.
+- `INTEGRATION.md` gained the endpoints it was missing (`org.mitos.FilePicker`,
+  `org.mitos.Desktop`, config files, plugin format, CLI).
+
+**Tests: 0 -> 36.** Since nothing here can be booted, the logic that used to be
+"trust me" now runs in CI's `cargo test` -- plain std, no display, each in its
+own scratch directory under the system temp dir:
+- `History`: back/forward retrace the trail, new navigation drops Forward,
+  vanished folders are skipped, `clear`, the 100-entry cap.
+- `validate_name`, `unique_destination` ("name (1).ext", dotfiles), move never
+  overwrites / same-folder move is a no-op / can't paste a folder into itself,
+  New File never truncates, Rename never replaces (and rejects `a/b`).
+- Folder size: totals, symlink loop not followed, single file, cancel.
+- Search engine: name, non-recursive, content (ASCII case-insensitive, hidden
+  files, symlink loop), type filter alone, cancel, and a needle that straddles
+  the 64 KiB chunk boundary.
+- Batch rename: token expansion, `civil_from_days` against known dates,
+  clash/duplicate validation (swaps allowed), a real name swap, rollback after
+  a mid-batch failure, cancel changes nothing.
+
+A red test there names the exact feature that's wrong.
+
+**Left alone on purpose:** `ui/file_view.rs` isn't in `ui/mod.rs`, so it was
+never compiled (no warning either) -- it's the old ListBox renderer, replaced
+by `grid_view`/`list_view`. Safe to delete. A stray top-level directory
+literally named `~` holds sample config files (`home.conf`, an example
+plugin); they look like they were meant for `examples/`.
+
+**If CI complains, look here first** (each is an API I'm confident about but
+couldn't compile-check):
+1. `operations/batch_rename.rs` -- `libc::localtime_r` / `libc::tm` fields.
+2. `main.rs` -- `emit_by_name::<()>("activate", &[])` and
+   `connect_notify_local(Some("selected"), ..)` on the type dropdown.
+3. `main.rs::show_split_context_menu` -- `Popover::downgrade` /
+   `connect_closed` / `unparent`.
+4. `navigation/locations.rs` -- `dirs::public_dir()`.
+5. `ui/theme.rs` -- the `thread_local!` provider slot.
+
+## Previous session -- SaveFiles portal support, and a full re-theme
 
 Two mostly-unrelated pieces of work, both hand-verified only (still no
 compiler or display here -- see the note at the end of each).

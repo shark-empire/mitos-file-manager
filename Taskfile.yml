@@ -17,7 +17,7 @@ tasks:
 
   deps:
     desc: Install GTK4 and required development packages
-    cmds: file:///rdmount/Inbox/mitos-file-manager-main/Taskfile.yml
+    cmds:
       - |
         set -e
 
