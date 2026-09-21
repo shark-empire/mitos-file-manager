@@ -106,7 +106,11 @@ mod tests {
             &[file.clone()],
             &dir
         )));
-        assert!(is_move(choose_operation(gdk::DragAction::MOVE, &[file], &dir)));
+        assert!(is_move(choose_operation(
+            gdk::DragAction::MOVE,
+            &[file],
+            &dir
+        )));
 
         let _ = fs::remove_dir_all(&dir);
     }

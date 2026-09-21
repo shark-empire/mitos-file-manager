@@ -24,10 +24,7 @@ pub fn setup_keyboard_help() -> Vec<(String, String)> {
         ("Ctrl+C".to_string(), "Copy selected files".to_string()),
         ("Ctrl+X".to_string(), "Cut selected files".to_string()),
         ("Ctrl+V".to_string(), "Paste files".to_string()),
-        (
-            "Ctrl+D".to_string(),
-            "Duplicate selected files".to_string(),
-        ),
+        ("Ctrl+D".to_string(), "Duplicate selected files".to_string()),
         (
             "Shift+Delete".to_string(),
             "Delete selected files permanently".to_string(),

@@ -212,7 +212,11 @@ pub fn update(container: &GtkBox, item: Option<&crate::ui::item_object::ItemObje
 /// Show an image scaled down to `PREVIEW_IMAGE_SIZE`. Returns false (so the
 /// caller falls back to the file-type icon) for files over the "max
 /// thumbnail size" setting or that no installed loader can read.
-fn show_image(widgets: &PreviewWidgets, item: &crate::ui::item_object::ItemObject, path: &Path) -> bool {
+fn show_image(
+    widgets: &PreviewWidgets,
+    item: &crate::ui::item_object::ItemObject,
+    path: &Path,
+) -> bool {
     let size = item.size();
 
     if size == 0 || size > crate::config::settings::thumbnail_max_bytes() {
@@ -286,7 +290,11 @@ fn describe_folder(path: &Path) -> String {
 fn describe_archive(path: &Path) -> Option<String> {
     let listing = archive::list_entries(path, PREVIEW_LIST_LIMIT).ok()?;
 
-    let mut text = format!("{} entries shown\n\n{}", listing.entries.len(), listing.entries.join("\n"));
+    let mut text = format!(
+        "{} entries shown\n\n{}",
+        listing.entries.len(),
+        listing.entries.join("\n")
+    );
 
     if listing.truncated {
         text.push_str("\n\u{2026} and more");
@@ -355,7 +363,10 @@ mod tests {
         fs::create_dir(&empty).unwrap();
         assert_eq!(describe_folder(&empty), "Empty folder");
 
-        assert_eq!(describe_folder(&dir.join("nope")), "This folder can't be read.");
+        assert_eq!(
+            describe_folder(&dir.join("nope")),
+            "This folder can't be read."
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

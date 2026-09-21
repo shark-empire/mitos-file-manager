@@ -181,7 +181,11 @@ fn add_mount_row(list: &ListBox, mount: &gio::Mount, window: &gtk::ApplicationWi
                 if let Err(err) = result {
                     dialogs::show_error(
                         &window_for_result,
-                        &format!("Failed to {}: {}", if ejects { "eject" } else { "unmount" }, err),
+                        &format!(
+                            "Failed to {}: {}",
+                            if ejects { "eject" } else { "unmount" },
+                            err
+                        ),
                     );
                 }
             };
