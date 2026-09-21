@@ -36,7 +36,9 @@ pub fn is_supported_archive(path: &Path) -> bool {
     let name = lowercase_name(path);
 
     NATIVE_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
-        || (EXTERNAL_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+        || (EXTERNAL_SUFFIXES
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
             && external_extractor().is_some())
 }
 
@@ -327,7 +329,10 @@ pub fn start_extract_job(
                     cancel,
                     pause,
                 )
-            } else if EXTERNAL_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) {
+            } else if EXTERNAL_SUFFIXES
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+            {
                 match external_extractor() {
                     Some(tool) => extract_external(
                         &tool,
@@ -827,7 +832,11 @@ pub fn list_entries(path: &Path, limit: usize) -> Result<ArchiveListing, String>
     if name.ends_with(".zip") {
         let archive = ZipArchive::new(file).map_err(|err| err.to_string())?;
 
-        let mut entries: Vec<String> = archive.file_names().take(limit + 1).map(String::from).collect();
+        let mut entries: Vec<String> = archive
+            .file_names()
+            .take(limit + 1)
+            .map(String::from)
+            .collect();
         let truncated = entries.len() > limit;
         entries.truncate(limit);
 
@@ -913,7 +922,10 @@ mod tests {
         assert!(finish(receiver).is_ok());
 
         assert_eq!(fs::read_to_string(out.join("docs/a.txt")).unwrap(), "alpha");
-        assert_eq!(fs::read_to_string(out.join("docs/sub/b.txt")).unwrap(), "beta");
+        assert_eq!(
+            fs::read_to_string(out.join("docs/sub/b.txt")).unwrap(),
+            "beta"
+        );
         assert_eq!(
             fs::read_link(out.join("docs/link-to-a")).unwrap(),
             PathBuf::from("a.txt")
@@ -948,7 +960,10 @@ mod tests {
         assert!(finish(receiver).is_ok());
 
         assert_eq!(fs::read_to_string(out.join("docs/a.txt")).unwrap(), "alpha");
-        assert_eq!(fs::read_to_string(out.join("docs/sub/b.txt")).unwrap(), "beta");
+        assert_eq!(
+            fs::read_to_string(out.join("docs/sub/b.txt")).unwrap(),
+            "beta"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -997,7 +1012,10 @@ mod tests {
         assert!(finish(receiver).is_ok());
 
         assert!(!root.join("escaped.txt").exists());
-        assert_eq!(fs::read_to_string(dest.join("safe/inside.txt")).unwrap(), "fine");
+        assert_eq!(
+            fs::read_to_string(dest.join("safe/inside.txt")).unwrap(),
+            "fine"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -1027,7 +1045,11 @@ mod tests {
             dir.join("Photos.zip")
         );
         assert_eq!(
-            default_archive_path(dir, &[PathBuf::from("/x/a"), PathBuf::from("/x/b")], "tar.gz"),
+            default_archive_path(
+                dir,
+                &[PathBuf::from("/x/a"), PathBuf::from("/x/b")],
+                "tar.gz"
+            ),
             dir.join("Archive.tar.gz")
         );
 

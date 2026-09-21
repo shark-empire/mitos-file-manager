@@ -30,8 +30,7 @@ pub enum PendingOp {
 pub fn validate_name(name: &str) -> Result<&str, FileManagerError> {
     let name = name.trim();
 
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0')
-    {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
         return Err(FileManagerError::InvalidName);
     }
 

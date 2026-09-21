@@ -47,11 +47,20 @@ pub struct PasteEntry {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Operation {
     Delete(Vec<PathBuf>),
-    Rename { from: PathBuf, to: PathBuf },
+    Rename {
+        from: PathBuf,
+        to: PathBuf,
+    },
     CreateFolder(PathBuf),
     CreateFile(PathBuf),
-    Paste { kind: PasteKind, entries: Vec<PasteEntry> },
-    Chmod { mode: u32, path: PathBuf },
+    Paste {
+        kind: PasteKind,
+        entries: Vec<PasteEntry>,
+    },
+    Chmod {
+        mode: u32,
+        path: PathBuf,
+    },
 }
 
 impl Operation {
@@ -418,7 +427,10 @@ mod tests {
             args(&["paste", "sideways", "keep", "/a", "/b"]),
             args(&["paste", "copy", "maybe", "/a", "/b"]),
         ] {
-            assert!(Operation::from_args(&bad).is_err(), "{bad:?} should be rejected");
+            assert!(
+                Operation::from_args(&bad).is_err(),
+                "{bad:?} should be rejected"
+            );
         }
     }
 
@@ -458,7 +470,11 @@ mod tests {
         .unwrap();
         assert!(dir.join("renamed").is_dir());
 
-        execute(&Operation::Delete(vec![dir.join("renamed"), dir.join("file")])).unwrap();
+        execute(&Operation::Delete(vec![
+            dir.join("renamed"),
+            dir.join("file"),
+        ]))
+        .unwrap();
         assert!(!dir.join("renamed").exists() && !dir.join("file").exists());
 
         let _ = fs::remove_dir_all(&dir);
@@ -534,7 +550,10 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o7777, 0o600);
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
