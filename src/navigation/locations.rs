@@ -81,7 +81,10 @@ mod tests {
         let places = default_places();
 
         assert_eq!(places.first().map(|(name, _)| name.as_str()), Some("Home"));
-        assert_eq!(places.last().map(|(_, path)| path.clone()), Some(PathBuf::from("/")));
+        assert_eq!(
+            places.last().map(|(_, path)| path.clone()),
+            Some(PathBuf::from("/"))
+        );
         assert_eq!(places.len(), 9);
     }
 
