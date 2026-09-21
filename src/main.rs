@@ -25,7 +25,7 @@ use gtk::{
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,7 +61,15 @@ enum JobRequest {
     Trash {
         paths: Vec<PathBuf>,
     },
+    /// Permanent deletion -- no Trash, no undo.
+    Delete {
+        paths: Vec<PathBuf>,
+    },
     CompressZip {
+        sources: Vec<PathBuf>,
+        archive_path: PathBuf,
+    },
+    CompressTarGz {
         sources: Vec<PathBuf>,
         archive_path: PathBuf,
     },
@@ -96,6 +104,13 @@ struct JobUi {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
+    // "Retry as administrator" re-runs this executable through pkexec in a
+    // window-less helper mode: one operation, then exit -- no GTK, no D-Bus
+    // services. See `operations::privileged`.
+    if args.first().map(String::as_str) == Some(operations::privileged::FLAG) {
+        std::process::exit(operations::privileged::run_helper(&args[1..]));
+    }
+
     let app = Application::builder()
         .application_id("org.mitos.file-manager")
         .build();
@@ -117,6 +132,7 @@ fn main() {
 
         let portal_rx = portal::service::start();
         let desktop_rx = desktop::service::start();
+        desktop::trash_service::start();
 
         build_ui(app, &args, Some(portal_rx), Some(desktop_rx));
     });
@@ -218,6 +234,9 @@ fn open_file_default(path: &PathBuf) {
     if gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>).is_err() {
         let _ = Command::new("xdg-open").arg(path).spawn();
     }
+
+    // Opening something puts it in the recent-files list.
+    navigation::recent::record(path);
 }
 
 /// Point a tab's view at the right page for `item_count` items: the "empty"
@@ -240,6 +259,118 @@ fn show_items_page(store: &gio::ListStore, item_count: usize, empty_text: &str) 
     };
 
     stack.set_visible_child_name(if item_count == 0 { "empty" } else { mode });
+}
+
+/// The freedesktop trash's `files` folder: what the sidebar's "Trash" row
+/// opens.
+fn is_trash_files_dir(path: &Path) -> bool {
+    dirs::data_dir().map_or(false, |data| path == data.join("Trash/files").as_path())
+}
+
+/// Files were dropped on `destination`. Copy or move them there -- except
+/// onto the Trash, where the files are trashed properly (with the metadata
+/// the trash format needs, so they can be restored) instead of being tossed
+/// into the folder.
+fn handle_file_drop(
+    job_ui: &JobUi,
+    target: &gtk::DropTarget,
+    value: &glib::Value,
+    destination: PathBuf,
+) -> bool {
+    let Some((operation, sources)) = ui::dnd::plan_drop(target, value, &destination) else {
+        return false;
+    };
+
+    // Dropping files back into the folder they're already in changes
+    // nothing -- and shouldn't pop up a "these already exist" question about
+    // the very files being dragged.
+    let sources: Vec<PathBuf> = sources
+        .into_iter()
+        .filter(|source| source.parent() != Some(destination.as_path()))
+        .collect();
+
+    if sources.is_empty() {
+        return true;
+    }
+
+    if is_trash_files_dir(&destination) {
+        start_trash_job_ui(
+            &job_ui.window,
+            &job_ui.notebook,
+            &job_ui.ctx,
+            &job_ui.location_entry,
+            &job_ui.search_entry,
+            &job_ui.hidden_toggle,
+            &job_ui.sidebar_list,
+            &job_ui.watcher_manager,
+            sources,
+        );
+
+        return true;
+    }
+
+    start_paste_job_ui_for(job_ui, operation, sources, destination);
+
+    true
+}
+
+/// Copy or cut `paths`: remember which (so a later paste knows whether the
+/// originals should go) and put them on the system clipboard for other
+/// applications to paste as well.
+fn set_clipboard_files(
+    widget: &impl IsA<gtk::Widget>,
+    ctx: &Rc<RefCell<AppContext>>,
+    operation: PendingOp,
+    paths: Vec<PathBuf>,
+) {
+    ui::clipboard::set_files(widget, operation, &paths);
+    ctx.borrow_mut().pending = Some((operation, paths));
+}
+
+/// Paste the clipboard into the folder the active tab is showing.
+///
+/// What's pasted comes from the *system* clipboard, so files copied in
+/// another application work; the remembered copy-or-cut from
+/// `set_clipboard_files` is used only if the clipboard still holds the very
+/// files we put there (otherwise someone else has copied since, and what's
+/// there is a plain copy).
+fn paste_into_current_tab(job_ui: JobUi) {
+    let window = job_ui.window.clone();
+
+    ui::clipboard::read_files(&window, move |clipboard_paths| {
+        let remembered = job_ui.ctx.borrow_mut().pending.take();
+
+        let plan = match remembered {
+            Some((operation, sources))
+                if clipboard_paths.is_empty()
+                    || ui::clipboard::same_files(&sources, &clipboard_paths) =>
+            {
+                Some((operation, sources))
+            }
+            _ if !clipboard_paths.is_empty() => Some((PendingOp::Copy, clipboard_paths)),
+            _ => None,
+        };
+
+        let Some((operation, sources)) = plan else {
+            dialogs::show_info(&job_ui.window, "Nothing to paste", NOTHING_TO_PASTE);
+            return;
+        };
+
+        let Some((tab_state, _, _, _)) = get_active_widgets(&job_ui.notebook) else {
+            return;
+        };
+
+        let destination = tab_state.borrow().current.clone();
+
+        // A cut's files have moved once pasted, so there's nothing left on
+        // the clipboard worth offering again. (A copy stays: paste it as
+        // many times as you like.)
+        if matches!(operation, PendingOp::Move) {
+            ui::clipboard::clear(&job_ui.window);
+        }
+
+        start_paste_job_ui_for(&job_ui, operation, sources, destination);
+    });
 }
 
 /// Refresh everything a finished file operation may have changed: the tab
@@ -344,7 +475,9 @@ fn portal_reply(result: Result<gio::File, glib::Error>) -> portal::service::Port
             // with no FUSE mount, say). A caller expecting a filesystem
             // path can't do anything with an empty string, so report the
             // failure instead of pretending a selection was made.
-            None => PortalResponse::Error("The selected location has no local path".to_string()),
+            None => PortalResponse::Error(
+                "The selected location has no local path".to_string(),
+            ),
         },
         // Dismissed, or closed without choosing anything.
         Err(_) => PortalResponse::Cancelled,
@@ -366,6 +499,14 @@ fn start_paste_job_ui(
 ) {
     if sources.is_empty() {
         return;
+    }
+
+    // A move removes the originals, so it can't touch protected paths.
+    if matches!(operation, PendingOp::Move) {
+        if let Err(err) = filesystem::protection::ensure_modifiable(&sources) {
+            dialogs::show_error(window, &err.to_string());
+            return;
+        }
     }
 
     let tasks = prepare_paste_tasks(window, sources, destination);
@@ -406,6 +547,13 @@ fn start_trash_job_ui(
         return;
     }
 
+    // "Move to Trash" on `/usr` or your home folder is just a slower way of
+    // deleting them.
+    if let Err(err) = filesystem::protection::ensure_modifiable(&paths) {
+        dialogs::show_error(window, &err.to_string());
+        return;
+    }
+
     let Some(queue) = get_obj_data::<_, JobQueue>(location_entry, "job-queue") else {
         return;
     };
@@ -440,7 +588,8 @@ fn start_compress_zip_job_ui(
         return;
     }
 
-    let archive_path = operations::archive::default_archive_path(&destination_dir);
+    let archive_path =
+        operations::archive::default_archive_path(&destination_dir, &sources, "zip");
 
     let Some(queue) = get_obj_data::<_, JobQueue>(location_entry, "job-queue") else {
         return;
@@ -543,6 +692,277 @@ fn start_batch_rename_job_ui(
     enqueue_job(&queue, JobRequest::BatchRename { renames }, ui);
 }
 
+impl JobUi {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        window: &ApplicationWindow,
+        notebook: &Notebook,
+        ctx: &Rc<RefCell<AppContext>>,
+        location_entry: &Entry,
+        search_entry: &SearchEntry,
+        hidden_toggle: &CheckButton,
+        sidebar_list: &ListBox,
+        watcher_manager: &Rc<RefCell<filesystem::watcher::WatcherManager>>,
+    ) -> Self {
+        Self {
+            window: window.clone(),
+            notebook: notebook.clone(),
+            ctx: ctx.clone(),
+            location_entry: location_entry.clone(),
+            search_entry: search_entry.clone(),
+            hidden_toggle: hidden_toggle.clone(),
+            sidebar_list: sidebar_list.clone(),
+            watcher_manager: watcher_manager.clone(),
+        }
+    }
+
+    /// Queue `request` to run after any job already in progress.
+    fn enqueue(&self, request: JobRequest) {
+        let Some(queue) = get_obj_data::<_, JobQueue>(&self.location_entry, "job-queue") else {
+            return;
+        };
+
+        enqueue_job(&queue, request, self.clone());
+    }
+}
+
+/// `start_paste_job_ui` for callers that already hold a `JobUi`.
+fn start_paste_job_ui_for(
+    job_ui: &JobUi,
+    operation: PendingOp,
+    sources: Vec<PathBuf>,
+    destination: PathBuf,
+) {
+    start_paste_job_ui(
+        &job_ui.window,
+        &job_ui.notebook,
+        &job_ui.ctx,
+        &job_ui.location_entry,
+        &job_ui.search_entry,
+        &job_ui.hidden_toggle,
+        &job_ui.sidebar_list,
+        &job_ui.watcher_manager,
+        operation,
+        sources,
+        destination,
+    );
+}
+
+fn start_compress_tar_gz_job_ui(job_ui: &JobUi, sources: Vec<PathBuf>, destination_dir: PathBuf) {
+    if sources.is_empty() {
+        return;
+    }
+
+    let archive_path =
+        operations::archive::default_archive_path(&destination_dir, &sources, "tar.gz");
+
+    job_ui.enqueue(JobRequest::CompressTarGz {
+        sources,
+        archive_path,
+    });
+}
+
+/// Permanently delete `paths`, after asking. Nothing goes to the Trash:
+/// this is for things that can't or shouldn't be trashed, or that the user
+/// simply wants gone. Protected paths are refused before the question is
+/// even asked, and a system location gets an extra warning.
+fn confirm_and_delete_permanently(job_ui: &JobUi, paths: Vec<PathBuf>) {
+    if paths.is_empty() {
+        return;
+    }
+
+    if let Err(err) = filesystem::protection::ensure_modifiable(&paths) {
+        dialogs::show_error(&job_ui.window, &err.to_string());
+        return;
+    }
+
+    let mut message = if let [only] = paths.as_slice() {
+        format!(
+            "\"{}\" will be deleted permanently. This can't be undone.",
+            only.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| only.display().to_string())
+        )
+    } else {
+        format!(
+            "{} items will be deleted permanently. This can't be undone.",
+            paths.len()
+        )
+    };
+
+    if paths
+        .iter()
+        .any(|path| filesystem::protection::is_system_area(path))
+    {
+        message.push_str(
+            "\n\nThis is in a system location: deleting system files can break your system.",
+        );
+    }
+
+    let window = job_ui.window.clone();
+    let job_ui = job_ui.clone();
+
+    dialogs::confirm_then(
+        &window,
+        "Delete Permanently?",
+        &message,
+        "Delete",
+        true,
+        move || {
+            job_ui.enqueue(JobRequest::Delete {
+                paths: paths.clone(),
+            });
+        },
+    );
+}
+
+/// How to redo a failed job as administrator, and what to ask the user.
+#[derive(Clone)]
+struct ElevatedRetry {
+    operation: operations::privileged::Operation,
+    prompt: String,
+}
+
+/// Did this job fail for lack of permission -- the one kind of failure
+/// that running as administrator can fix?
+fn is_permission_error(message: &str) -> bool {
+    message.contains("Permission denied") || message.contains("Operation not permitted")
+}
+
+fn is_permission_denied(err: &error::FileManagerError) -> bool {
+    matches!(
+        err,
+        error::FileManagerError::Io(io_err)
+            if io_err.kind() == std::io::ErrorKind::PermissionDenied
+    )
+}
+
+/// The administrator equivalent of `request`, if it has one.
+fn elevated_retry_for(request: &JobRequest) -> Option<ElevatedRetry> {
+    use operations::jobs::ConflictAction;
+    use operations::privileged::{Operation, PasteEntry, PasteKind};
+
+    match request {
+        JobRequest::Paste { operation, tasks } => {
+            let entries: Vec<PasteEntry> = tasks
+                .iter()
+                .filter(|task| task.action != ConflictAction::Skip)
+                .map(|task| PasteEntry {
+                    replace: task.action == ConflictAction::Replace,
+                    source: task.source.clone(),
+                    target: task.destination.clone(),
+                })
+                .collect();
+
+            if entries.is_empty() {
+                return None;
+            }
+
+            let kind = match operation {
+                PendingOp::Copy => PasteKind::Copy,
+                PendingOp::Move => PasteKind::Move,
+            };
+
+            Some(ElevatedRetry {
+                operation: Operation::Paste { kind, entries },
+                prompt: "MITOS Files doesn't have permission to do this. Retry it as administrator?"
+                    .to_string(),
+            })
+        }
+        JobRequest::Delete { paths } => Some(ElevatedRetry {
+            operation: Operation::Delete(paths.clone()),
+            prompt: "Deleting these items needs administrator permission. Delete them as \
+                     administrator? This can't be undone."
+                .to_string(),
+        }),
+        // Root has no business quietly filling *its own* trash can with the
+        // user's files, so a failed "move to Trash" is offered as what it
+        // really is: a permanent deletion.
+        JobRequest::Trash { paths } => Some(ElevatedRetry {
+            operation: Operation::Delete(paths.clone()),
+            prompt: "These items couldn't be moved to the Trash (permission denied). Delete them \
+                     permanently as administrator instead? This can't be undone."
+                .to_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// A rename or create failed. If it was for lack of permission, offer to
+/// redo it as administrator (`retry`); any other reason is just reported.
+fn report_or_elevate(
+    job_ui: &JobUi,
+    what: &str,
+    err: &error::FileManagerError,
+    retry: operations::privileged::Operation,
+) {
+    if is_permission_denied(err) {
+        offer_elevated_retry(
+            job_ui,
+            &ElevatedRetry {
+                operation: retry,
+                prompt: format!("You don't have permission to {what}. Retry it as administrator?"),
+            },
+            &err.to_string(),
+        );
+    } else {
+        dialogs::show_error(&job_ui.window, &format!("Could not {what}: {err}"));
+    }
+}
+
+/// Explain that an operation needs administrator permission and, if the
+/// user agrees, run it that way.
+fn offer_elevated_retry(job_ui: &JobUi, retry: &ElevatedRetry, error: &str) {
+    let message = format!("{}\n\n({error})", retry.prompt);
+    let operation = retry.operation.clone();
+    let window = job_ui.window.clone();
+    let job_ui = job_ui.clone();
+
+    dialogs::confirm_then(
+        &window,
+        "Administrator Permission Needed",
+        &message,
+        "Retry as Administrator",
+        true,
+        move || run_elevated(job_ui.clone(), operation.clone()),
+    );
+}
+
+/// Run `operation` as administrator on a worker thread (the password prompt
+/// belongs to the elevation command and blocks until answered) and report
+/// the outcome.
+fn run_elevated(job_ui: JobUi, operation: operations::privileged::Operation) {
+    if let Some(status_label) = get_obj_data::<_, Label>(&job_ui.location_entry, "status-label") {
+        status_label.set_label("Waiting for administrator authentication\u{2026}");
+    }
+
+    let (sender, receiver) = async_channel::bounded::<Result<(), String>>(1);
+
+    std::thread::spawn(move || {
+        let _ = sender.send_blocking(operations::privileged::run_elevated(&operation));
+    });
+
+    glib::MainContext::default().spawn_local(async move {
+        let Ok(result) = receiver.recv().await else {
+            return;
+        };
+
+        match result {
+            Ok(()) => send_job_notification(
+                &job_ui.window,
+                "Done as administrator",
+                "The operation completed.",
+            ),
+            Err(err) => dialogs::show_error(
+                &job_ui.window,
+                &format!("Couldn't complete the operation as administrator: {err}"),
+            ),
+        }
+
+        refresh_after_change(&job_ui);
+    });
+}
+
 fn prepare_paste_tasks(
     window: &ApplicationWindow,
     sources: Vec<PathBuf>,
@@ -635,6 +1055,10 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
 
     let (sender, receiver) = async_channel::unbounded();
 
+    // If this job fails for lack of permission, this is how to redo it as
+    // administrator (`None` for jobs where that makes no sense).
+    let elevated_retry = elevated_retry_for(&request);
+
     let (handle, title) = match request {
         JobRequest::Paste { operation, tasks } => {
             let handle = operations::jobs::start_paste_job(operation, tasks, sender);
@@ -644,11 +1068,23 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
             let handle = operations::jobs::start_trash_job(paths, sender);
             (handle, "Trash")
         }
+        JobRequest::Delete { paths } => {
+            let handle = operations::jobs::start_delete_job(paths, sender);
+            (handle, "Delete")
+        }
         JobRequest::CompressZip {
             sources,
             archive_path,
         } => {
             let handle = operations::archive::start_compress_zip_job(sources, archive_path, sender);
+            (handle, "Compress")
+        }
+        JobRequest::CompressTarGz {
+            sources,
+            archive_path,
+        } => {
+            let handle =
+                operations::archive::start_compress_tar_gz_job(sources, archive_path, sender);
             (handle, "Compress")
         }
         JobRequest::ExtractArchive {
@@ -699,7 +1135,13 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
 
         if let Err(ref err) = result {
             if !err.contains("Cancelled") {
-                dialogs::show_error(&window_error, &format!("Job failed: {err}"));
+                match &elevated_retry {
+                    // Not allowed to: offer to do it as administrator.
+                    Some(retry) if is_permission_error(err) => {
+                        offer_elevated_retry(&ui_for_done, retry, err);
+                    }
+                    _ => dialogs::show_error(&window_error, &format!("Job failed: {err}")),
+                }
             }
         }
 
@@ -734,7 +1176,11 @@ fn refresh_tab(
     sidebar_list: &ListBox,
 ) {
     let (current, search_query, show_hidden) = {
-        let s = tab_state.borrow();
+        let mut s = tab_state.borrow_mut();
+
+        // An explicit refresh goes back to showing the folder itself.
+        s.showing_results = false;
+
         (s.current.clone(), s.search_query.clone(), s.show_hidden)
     };
 
@@ -751,34 +1197,6 @@ fn refresh_tab(
     if hidden_toggle.is_active() != show_hidden {
         hidden_toggle.set_active(show_hidden);
     }
-
-    let mut items = directory::read_items(&current, show_hidden);
-
-    if !search_query.is_empty() {
-        let q = search_query.to_lowercase();
-        items.retain(|item| item.name.to_lowercase().contains(&q));
-    }
-
-    items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
-
-    let item_count = items.len();
-
-    grid_view::render(store, &items);
-    tab_state.borrow_mut().items = items;
-
-    show_items_page(
-        store,
-        item_count,
-        if search_query.is_empty() {
-            "This folder is empty"
-        } else {
-            "No results found"
-        },
-    );
 
     // Back / Forward / Up grey out when there's nowhere for them to go.
     {
@@ -797,18 +1215,228 @@ fn refresh_tab(
         }
     }
 
-    if let Some(win) = get_obj_data::<_, gtk::ApplicationWindow>(location_entry, "main-window") {
-        sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
+    // The folder's contents are read on a worker thread; the view is filled
+    // in when they arrive (`finish_directory_load`).
+    start_directory_load(tab_state, store, ctx, location_entry, sidebar_list);
+}
+
+/// What a background directory listing hands back to the GTK thread.
+struct LoadedDirectory {
+    items: Vec<directory::Item>,
+    /// May the current user create things here? (`access(2)` can block on a
+    /// slow mount, so it's asked here with the listing, off the GTK thread.)
+    writable: bool,
+    /// An administrator-only location (`/etc`, `/usr`, ...).
+    system_area: bool,
+    /// Free space on the folder's filesystem, already formatted.
+    free: String,
+}
+
+/// The blocking half of showing a folder -- listing it, filtering, sorting,
+/// asking about permissions and free space -- with no GTK in it, so it can
+/// run on a worker thread.
+fn load_directory(path: &Path, show_hidden: bool, query: &str) -> LoadedDirectory {
+    let mut items = directory::read_items(path, show_hidden);
+
+    if !query.is_empty() {
+        let query = query.to_lowercase();
+        items.retain(|item| item.name.to_lowercase().contains(&query));
+    }
+
+    LoadedDirectory {
+        items,
+        writable: filesystem::access::can_write(path),
+        system_area: filesystem::protection::is_system_area(path),
+        free: metadata::free_space_string(path),
+    }
+}
+
+/// Start listing the tab's folder in the background.
+///
+/// Opening a folder used to read and describe every file on the GTK thread,
+/// so a big folder (or a slow network mount) froze the whole window. Now the
+/// window stays live: this starts a worker, and when it reports back
+/// `finish_directory_load` fills the view.
+///
+/// Refreshes that arrive while a listing is running don't start another one
+/// (a burst of file-watcher events would otherwise pile up threads); the
+/// running one notices it's out of date when it finishes and starts over
+/// with the latest state.
+fn start_directory_load(
+    tab_state: &Rc<RefCell<TabState>>,
+    store: &gio::ListStore,
+    ctx: &Rc<RefCell<AppContext>>,
+    location_entry: &Entry,
+    sidebar_list: &ListBox,
+) {
+    let generation = {
+        let mut s = tab_state.borrow_mut();
+        s.load_generation += 1;
+
+        if s.load_in_flight {
+            return;
+        }
+
+        s.load_in_flight = true;
+        s.load_generation
+    };
+
+    let (current, query, show_hidden, folder_changed) = {
+        let s = tab_state.borrow();
+        (
+            s.current.clone(),
+            s.search_query.clone(),
+            s.show_hidden,
+            s.loaded_path != s.current,
+        )
+    };
+
+    // Going to a different folder: say so at once, rather than leaving the
+    // old folder's files under the new folder's name until the listing
+    // arrives. Refreshing the folder already on screen keeps its rows where
+    // they are until the new listing is ready, so it doesn't flicker.
+    if folder_changed {
+        store.remove_all();
+        show_items_page(store, 0, "Loading\u{2026}");
+    }
+
+    let (sender, receiver) = async_channel::bounded::<LoadedDirectory>(1);
+
+    {
+        let current = current.clone();
+        let query = query.clone();
+
+        std::thread::spawn(move || {
+            let _ = sender.send_blocking(load_directory(&current, show_hidden, &query));
+        });
+    }
+
+    let tab_state = tab_state.clone();
+    let store = store.clone();
+    let ctx = ctx.clone();
+    let location_entry = location_entry.clone();
+    let sidebar_list = sidebar_list.clone();
+
+    glib::MainContext::default().spawn_local(async move {
+        let loaded = receiver.recv().await;
+
+        let (stale, showing_results) = {
+            let mut s = tab_state.borrow_mut();
+            s.load_in_flight = false;
+            (s.load_generation != generation, s.showing_results)
+        };
+
+        let Ok(loaded) = loaded else {
+            return;
+        };
+
+        // Search results arrived while this listing was loading: leave them.
+        if showing_results {
+            return;
+        }
+
+        if stale {
+            start_directory_load(&tab_state, &store, &ctx, &location_entry, &sidebar_list);
+            return;
+        }
+
+        finish_directory_load(
+            &tab_state,
+            &store,
+            &ctx,
+            &location_entry,
+            &sidebar_list,
+            generation,
+            &current,
+            &query,
+            loaded,
+        );
+    });
+}
+
+/// Show a finished listing: fill the view, grey out what can't be done in a
+/// read-only folder, refresh the sidebar if anything in it changed, and
+/// update the status bar.
+#[allow(clippy::too_many_arguments)]
+fn finish_directory_load(
+    tab_state: &Rc<RefCell<TabState>>,
+    store: &gio::ListStore,
+    ctx: &Rc<RefCell<AppContext>>,
+    location_entry: &Entry,
+    sidebar_list: &ListBox,
+    generation: u64,
+    current: &Path,
+    query: &str,
+    loaded: LoadedDirectory,
+) {
+    let LoadedDirectory {
+        items,
+        writable,
+        system_area,
+        free,
+    } = loaded;
+
+    let item_count = items.len();
+
+    tab_state.borrow_mut().loaded_path = current.to_path_buf();
+
+    // The first screenful goes in now and the rest follows in chunks; if
+    // another refresh starts before the last chunk is in, the remainder is
+    // dropped (the newer listing replaces everything anyway).
+    let still_current = {
+        let tab_state = tab_state.clone();
+        move || tab_state.borrow().load_generation == generation
+    };
+
+    grid_view::render_progressive(store, items, still_current);
+
+    show_items_page(
+        store,
+        item_count,
+        if query.is_empty() {
+            "This folder is empty"
+        } else {
+            "No results found"
+        },
+    );
+
+    // Permission awareness: don't offer to create or paste into a folder
+    // that can't be written to.
+    for key in ["new-folder-btn", "new-file-btn", "paste-btn"] {
+        if let Some(button) = get_obj_data::<_, Button>(location_entry, key) {
+            button.set_sensitive(writable);
+        }
+    }
+
+    // The sidebar only needs rebuilding when something it shows changed
+    // (bookmarks, drives, recent files) -- not on every folder change, which
+    // is what it used to do.
+    if let Some(win) = get_obj_data::<_, ApplicationWindow>(location_entry, "main-window") {
+        let signature = sidebar::signature(&ctx.borrow().bookmarks);
+
+        if get_obj_data::<_, u64>(sidebar_list, "sidebar-signature") != Some(signature) {
+            sidebar::build(sidebar_list, &ctx.borrow().bookmarks, &win);
+            set_obj_data(sidebar_list, "sidebar-signature", signature);
+        }
     }
 
     if let Some(status_label) = get_obj_data::<_, Label>(location_entry, "status-label") {
-        let free = filesystem_free_string(&current);
+        let mut notes = String::new();
+
+        if !writable {
+            notes.push_str(" \u{b7} read-only");
+        }
+
+        if system_area {
+            notes.push_str(" \u{b7} system location");
+        }
 
         status_label.set_label(&format!(
-            "{} · {} items · {} free",
+            "{} \u{b7} {} items \u{b7} {} free{}",
             current.display(),
             item_count,
-            free
+            free,
+            notes
         ));
     }
 }
@@ -873,7 +1501,13 @@ fn add_tab(
                 if selected.is_empty() {
                     selection_label.set_label("");
                 } else {
-                    let total: u64 = selected.iter().map(|item| item.size()).sum();
+                    // A folder's own "size" is just its directory entry, so
+                    // only files are added up (Properties measures folders).
+                    let total: u64 = selected
+                        .iter()
+                        .filter(|item| !item.is_dir())
+                        .map(|item| item.size())
+                        .sum();
 
                     selection_label.set_label(&format!(
                         "{} selected · {}",
@@ -902,6 +1536,31 @@ fn add_tab(
 
     let page_index = notebook.append_page(&page_widget, Some(&tab_label));
     notebook.set_tab_reorderable(&page_widget, true);
+
+    // Dropping files onto a tab's header puts them in that tab's folder.
+    {
+        let job_ui = JobUi {
+            window: window.clone(),
+            notebook: notebook.clone(),
+            ctx: ctx.clone(),
+            location_entry: location_entry.clone(),
+            search_entry: search_entry.clone(),
+            hidden_toggle: hidden_toggle.clone(),
+            sidebar_list: sidebar_list.clone(),
+            watcher_manager: watcher_manager.clone(),
+        };
+        let tab_state = tab_state.clone();
+
+        let drop_target = ui::dnd::new_file_drop_target();
+
+        drop_target.connect_drop(move |target, value, _x, _y| {
+            let destination = tab_state.borrow().current.clone();
+
+            handle_file_drop(&job_ui, target, value, destination)
+        });
+
+        tab_label.add_controller(drop_target);
+    }
 
     // Tab context menu (right-click on tab)
     {
@@ -1008,67 +1667,28 @@ fn add_tab(
         grid.add_controller(drag_source);
     }
 
-    // 3. Drop Target
+    // 3. Drop Target: drop files into the folder being shown. Copy or move
+    // follows the modifier keys, or the filesystem when there's none (see
+    // `ui::dnd::choose_operation`).
     {
-        let window_error = window.clone();
+        let job_ui = JobUi {
+            window: window.clone(),
+            notebook: notebook.clone(),
+            ctx: ctx.clone(),
+            location_entry: location_entry.clone(),
+            search_entry: search_entry.clone(),
+            hidden_toggle: hidden_toggle.clone(),
+            sidebar_list: sidebar_list.clone(),
+            watcher_manager: watcher_manager.clone(),
+        };
         let tab_state = tab_state.clone();
-        let ctx = ctx.clone();
-        let location_entry = location_entry.clone();
-        let search_entry = search_entry.clone();
-        let hidden_toggle = hidden_toggle.clone();
-        let sidebar_list = sidebar_list.clone();
-        let watcher_manager = watcher_manager.clone();
-        let notebook = notebook.clone();
 
-        let drop_target = gtk::DropTarget::new(
-            gtk::gdk::FileList::static_type(),
-            gtk::gdk::DragAction::COPY,
-        );
+        let drop_target = ui::dnd::new_file_drop_target();
 
-        drop_target.connect_drop(move |_target, value, _x, _y| {
-            let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
-                return false;
-            };
+        drop_target.connect_drop(move |target, value, _x, _y| {
+            let destination = tab_state.borrow().current.clone();
 
-            let is_copy = true;
-
-            let files = file_list.files();
-            if files.is_empty() {
-                return false;
-            }
-
-            let destination_dir = tab_state.borrow().current.clone();
-
-            let sources: Vec<PathBuf> = files
-                .iter()
-                .filter_map(|file| file.path().map(PathBuf::from))
-                .collect();
-
-            if sources.is_empty() {
-                return false;
-            }
-
-            let operation = if is_copy {
-                PendingOp::Copy
-            } else {
-                PendingOp::Move
-            };
-
-            start_paste_job_ui(
-                &window_error,
-                &notebook,
-                &ctx,
-                &location_entry,
-                &search_entry,
-                &hidden_toggle,
-                &sidebar_list,
-                &watcher_manager,
-                operation,
-                sources,
-                destination_dir,
-            );
-
-            true
+            handle_file_drop(&job_ui, target, value, destination)
         });
 
         grid.add_controller(drop_target);
@@ -1224,62 +1844,24 @@ fn add_tab(
 
     // ---- List view: drop target (into current directory) ----
     {
-        let window_error = window.clone();
+        let job_ui = JobUi {
+            window: window.clone(),
+            notebook: notebook.clone(),
+            ctx: ctx.clone(),
+            location_entry: location_entry.clone(),
+            search_entry: search_entry.clone(),
+            hidden_toggle: hidden_toggle.clone(),
+            sidebar_list: sidebar_list.clone(),
+            watcher_manager: watcher_manager.clone(),
+        };
         let tab_state = tab_state.clone();
-        let ctx = ctx.clone();
-        let location_entry = location_entry.clone();
-        let search_entry = search_entry.clone();
-        let hidden_toggle = hidden_toggle.clone();
-        let sidebar_list = sidebar_list.clone();
-        let watcher_manager = watcher_manager.clone();
-        let notebook = notebook.clone();
 
-        let drop_target = gtk::DropTarget::new(
-            gtk::gdk::FileList::static_type(),
-            gtk::gdk::DragAction::COPY,
-        );
+        let drop_target = ui::dnd::new_file_drop_target();
 
-        drop_target.connect_drop(move |_target, value, _x, _y| {
-            let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
-                return false;
-            };
+        drop_target.connect_drop(move |target, value, _x, _y| {
+            let destination = tab_state.borrow().current.clone();
 
-            let is_copy = true;
-            let files = file_list.files();
-            if files.is_empty() {
-                return false;
-            }
-
-            let destination_dir = tab_state.borrow().current.clone();
-            let sources: Vec<PathBuf> = files
-                .iter()
-                .filter_map(|f| f.path().map(PathBuf::from))
-                .collect();
-            if sources.is_empty() {
-                return false;
-            }
-
-            let operation = if is_copy {
-                PendingOp::Copy
-            } else {
-                PendingOp::Move
-            };
-
-            start_paste_job_ui(
-                &window_error,
-                &notebook,
-                &ctx,
-                &location_entry,
-                &search_entry,
-                &hidden_toggle,
-                &sidebar_list,
-                &watcher_manager,
-                operation,
-                sources,
-                destination_dir,
-            );
-
-            true
+            handle_file_drop(&job_ui, target, value, destination)
         });
 
         list_view.add_controller(drop_target);
@@ -1532,6 +2114,9 @@ fn build_ui(
     set_obj_data(&location_entry, "selection-label", selection_label.clone());
     set_obj_data(&location_entry, "job-queue", job_queue.clone());
     set_obj_data(&location_entry, "preview-panel", preview_scrolled.clone());
+    set_obj_data(&location_entry, "new-folder-btn", new_folder_btn.clone());
+    set_obj_data(&location_entry, "new-file-btn", new_file_btn.clone());
+    set_obj_data(&location_entry, "paste-btn", paste_btn.clone());
     set_obj_data(&location_entry, "split-pane", split_pane.clone());
     set_obj_data(&location_entry, "split-toggle", split_toggle.clone());
     set_obj_data(&location_entry, "back-btn", back_btn.clone());
@@ -1604,6 +2189,53 @@ fn build_ui(
         });
 
         split_pane.grid.add_controller(right_click);
+    }
+
+    // Split pane: files can be dragged out of it and dropped onto it (into
+    // whichever folder it is showing) -- the same copy/move rules as
+    // everywhere else.
+    {
+        let job_ui = JobUi {
+            window: window.clone(),
+            notebook: notebook.clone(),
+            ctx: ctx.clone(),
+            location_entry: location_entry.clone(),
+            search_entry: search_entry.clone(),
+            hidden_toggle: hidden_toggle.clone(),
+            sidebar_list: sidebar_list.clone(),
+            watcher_manager: watcher_manager.clone(),
+        };
+        let split_for_drop = split_pane.clone();
+
+        let drop_target = ui::dnd::new_file_drop_target();
+
+        drop_target.connect_drop(move |target, value, _x, _y| {
+            let destination = split_for_drop.state.borrow().current.clone();
+
+            handle_file_drop(&job_ui, target, value, destination)
+        });
+
+        split_pane.grid.add_controller(drop_target);
+
+        let drag_source = gtk::DragSource::builder()
+            .actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE)
+            .build();
+        let split_for_drag = split_pane.clone();
+
+        drag_source.connect_prepare(move |_source, _x, _y| {
+            let paths = split_for_drag.selected_paths();
+
+            if paths.is_empty() {
+                return None;
+            }
+
+            let files: Vec<gio::File> = paths.iter().map(|path| gio::File::for_path(path)).collect();
+            let file_list = gtk::gdk::FileList::from_array(&files);
+
+            Some(gtk::gdk::ContentProvider::for_value(&file_list.to_value()))
+        });
+
+        split_pane.grid.add_controller(drag_source);
     }
 
     // Poll for config changes
@@ -1701,6 +2333,7 @@ fn build_ui(
             }
 
             let alt = modifier.contains(gtk::gdk::ModifierType::ALT_MASK);
+            let shift = modifier.contains(gtk::gdk::ModifierType::SHIFT_MASK);
             let active = get_active_widgets(&notebook);
 
             // Type-ahead: typing letters jumps to matching files
@@ -1716,13 +2349,17 @@ fn build_ui(
             }
 
             match key {
+                k if ctrl && k == gtk::gdk::Key::f => {
+                    search_entry.grab_focus();
+                    return glib::Propagation::Stop;
+                }
                 k if ctrl && k == gtk::gdk::Key::c => {
                     if let Some((_, _, store, selection)) = &active {
                         let selected = grid_view::selected_items(selection, store);
                         if !selected.is_empty() {
                             let paths: Vec<PathBuf> =
                                 selected.iter().map(|item| item.get_path()).collect();
-                            ctx.borrow_mut().pending = Some((PendingOp::Copy, paths));
+                            set_clipboard_files(&window, &ctx, PendingOp::Copy, paths);
                         }
                     }
                     return glib::Propagation::Stop;
@@ -1733,34 +2370,22 @@ fn build_ui(
                         if !selected.is_empty() {
                             let paths: Vec<PathBuf> =
                                 selected.iter().map(|item| item.get_path()).collect();
-                            ctx.borrow_mut().pending = Some((PendingOp::Move, paths));
+                            set_clipboard_files(&window, &ctx, PendingOp::Move, paths);
                         }
                     }
                     return glib::Propagation::Stop;
                 }
                 k if ctrl && k == gtk::gdk::Key::v => {
-                    let pending = ctx.borrow_mut().pending.take();
-                    if pending.is_none() {
-                        dialogs::show_info(&window, "Nothing to paste", NOTHING_TO_PASTE);
-                    }
-                    if let Some((operation, sources)) = pending {
-                        if let Some((tab_state, _, _, _)) = &active {
-                            let destination_dir = tab_state.borrow().current.clone();
-                            start_paste_job_ui(
-                                &window,
-                                &notebook,
-                                &ctx,
-                                &location_entry,
-                                &search_entry,
-                                &hidden_toggle,
-                                &sidebar_list,
-                                &watcher_manager,
-                                operation,
-                                sources,
-                                destination_dir,
-                            );
-                        }
-                    }
+                    paste_into_current_tab(JobUi {
+                        window: window.clone(),
+                        notebook: notebook.clone(),
+                        ctx: ctx.clone(),
+                        location_entry: location_entry.clone(),
+                        search_entry: search_entry.clone(),
+                        hidden_toggle: hidden_toggle.clone(),
+                        sidebar_list: sidebar_list.clone(),
+                        watcher_manager: watcher_manager.clone(),
+                    });
                     return glib::Propagation::Stop;
                 }
                 k if ctrl && k == gtk::gdk::Key::d => {
@@ -1837,6 +2462,31 @@ fn build_ui(
                     }
                     return glib::Propagation::Stop;
                 }
+                // Up one folder: Alt+Up, or Backspace as in most file managers.
+                k if (alt && k == gtk::gdk::Key::Up) || k == gtk::gdk::Key::BackSpace => {
+                    if let Some((tab_state, _, store, _)) = &active {
+                        let parent = tab_state
+                            .borrow()
+                            .current
+                            .parent()
+                            .map(|parent| parent.to_path_buf());
+
+                        if let Some(parent) = parent {
+                            navigate_to(tab_state, parent);
+                            refresh_tab(
+                                tab_state,
+                                store,
+                                &ctx,
+                                &location_entry,
+                                &search_entry,
+                                &hidden_toggle,
+                                &sidebar_list,
+                            );
+                            update_watcher(&notebook, &watcher_manager);
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
                 k if alt && k == gtk::gdk::Key::Left => {
                     if let Some((tab_state, _, store, _)) = &active {
                         let current = tab_state.borrow().current.clone();
@@ -1883,17 +2533,35 @@ fn build_ui(
                         if !selected.is_empty() {
                             let paths: Vec<PathBuf> =
                                 selected.iter().map(|item| item.get_path()).collect();
-                            start_trash_job_ui(
-                                &window,
-                                &notebook,
-                                &ctx,
-                                &location_entry,
-                                &search_entry,
-                                &hidden_toggle,
-                                &sidebar_list,
-                                &watcher_manager,
-                                paths,
-                            );
+
+                            if shift {
+                                // Shift+Delete skips the Trash -- after asking.
+                                confirm_and_delete_permanently(
+                                    &JobUi::new(
+                                        &window,
+                                        &notebook,
+                                        &ctx,
+                                        &location_entry,
+                                        &search_entry,
+                                        &hidden_toggle,
+                                        &sidebar_list,
+                                        &watcher_manager,
+                                    ),
+                                    paths,
+                                );
+                            } else {
+                                start_trash_job_ui(
+                                    &window,
+                                    &notebook,
+                                    &ctx,
+                                    &location_entry,
+                                    &search_entry,
+                                    &hidden_toggle,
+                                    &sidebar_list,
+                                    &watcher_manager,
+                                    paths,
+                                );
+                            }
                         }
                     }
                     return glib::Propagation::Stop;
@@ -1927,9 +2595,23 @@ fn build_ui(
                                     if let Err(err) =
                                         operations::rename::rename_path(&source, &name)
                                     {
-                                        dialogs::show_error(
-                                            &window_err,
-                                            &format!("Could not rename: {err}"),
+                                        report_or_elevate(
+                                            &JobUi::new(
+                                                &window_err,
+                                                &notebook_clone,
+                                                &ctx_clone,
+                                                &location_entry_clone,
+                                                &search_entry_clone,
+                                                &hidden_toggle_clone,
+                                                &sidebar_list_clone,
+                                                &watcher_manager_clone,
+                                            ),
+                                            "rename",
+                                            &err,
+                                            operations::privileged::Operation::Rename {
+                                                from: source.clone(),
+                                                to: source.with_file_name(&name),
+                                            },
                                         );
                                     }
                                     if let Some((tab_state, _, store, _)) =
@@ -2027,16 +2709,16 @@ fn build_ui(
 
             // Entry 0 of the dropdown is "All types"; entry N is
             // `FileTypeFilter::all()[N - 1]`.
-            let file_types: Vec<search::filters::FileTypeFilter> = (search_type_dropdown.selected()
-                as usize)
-                .checked_sub(1)
-                .and_then(|index| {
-                    search::filters::FileTypeFilter::all()
-                        .into_iter()
-                        .nth(index)
-                })
-                .into_iter()
-                .collect();
+            let file_types: Vec<search::filters::FileTypeFilter> =
+                (search_type_dropdown.selected() as usize)
+                    .checked_sub(1)
+                    .and_then(|index| {
+                        search::filters::FileTypeFilter::all()
+                            .into_iter()
+                            .nth(index)
+                    })
+                    .into_iter()
+                    .collect();
 
             // Nothing typed and no type chosen: back to the plain folder view.
             if query.is_empty() && file_types.is_empty() {
@@ -2110,8 +2792,9 @@ fn build_ui(
 
             let location_entry = location_entry.clone();
 
-            glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-                match rx.try_recv() {
+            glib::timeout_add_local(
+                std::time::Duration::from_millis(50),
+                move || match rx.try_recv() {
                     Ok(results) => {
                         // The tab may have moved to another folder while the
                         // search ran; results for the old one would replace
@@ -2129,7 +2812,12 @@ fn build_ui(
                         {
                             let mut s = tab_state.borrow_mut();
                             s.search_query = query.clone();
-                            s.items = items;
+                            // Results, not a listing: stop any chunked fill of
+                            // the folder that was still going, and ignore a
+                            // listing still in flight, so neither mixes into
+                            // (or replaces) what was just found.
+                            s.showing_results = true;
+                            s.load_generation += 1;
                         }
 
                         show_items_page(&store, count, "No results found");
@@ -2155,8 +2843,8 @@ fn build_ui(
                     // search cancelled it, and that one owns the grid now.
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
                     Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                }
-            });
+                },
+            );
         });
     }
 
@@ -2267,6 +2955,47 @@ fn build_ui(
                 return;
             }
 
+            // An unmounted drive: mount it, then open it.
+            let row_name = row.widget_name();
+
+            if let Some(volume_key) = row_name.strip_prefix("volume:") {
+                let volume = gio::VolumeMonitor::get()
+                    .volumes()
+                    .into_iter()
+                    .find(|volume| sidebar::volume_id(volume) == volume_key);
+
+                if let (Some(volume), Some(window)) = (
+                    volume,
+                    get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window"),
+                ) {
+                    let notebook = notebook.clone();
+                    let ctx = ctx.clone();
+                    let location_entry = location_entry.clone();
+                    let search_entry = search_entry.clone();
+                    let hidden_toggle = hidden_toggle.clone();
+                    let sidebar_list = sidebar_list_for_closure.clone();
+                    let watcher_manager = watcher_manager.clone();
+
+                    sidebar::mount_volume(&volume, &window, move |path| {
+                        if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                            navigate_to(&tab_state, path);
+                            refresh_tab(
+                                &tab_state,
+                                &store,
+                                &ctx,
+                                &location_entry,
+                                &search_entry,
+                                &hidden_toggle,
+                                &sidebar_list,
+                            );
+                            update_watcher(&notebook, &watcher_manager);
+                        }
+                    });
+                }
+
+                return;
+            }
+
             if let Some(path) = sidebar::resolve_click(row) {
                 if path.is_file() {
                     open_file_default(&path);
@@ -2322,10 +3051,58 @@ fn build_ui(
                         x,
                         y,
                     );
+                } else if name.starts_with("recent:") {
+                    show_recent_context_menu(
+                        &sidebar_list_for_closure,
+                        &location_entry,
+                        &ctx,
+                        x,
+                        y,
+                    );
                 }
             }
         });
         sidebar_list.add_controller(right_click);
+    }
+
+    // Drop files onto a place in the sidebar -- a folder, a bookmark, a
+    // drive -- to copy or move them there. (One controller on the whole
+    // list, looking up the row under the pointer, so it survives the
+    // sidebar being rebuilt.)
+    {
+        let job_ui = JobUi {
+            window: window.clone(),
+            notebook: notebook.clone(),
+            ctx: ctx.clone(),
+            location_entry: location_entry.clone(),
+            search_entry: search_entry.clone(),
+            hidden_toggle: hidden_toggle.clone(),
+            sidebar_list: sidebar_list.clone(),
+            watcher_manager: watcher_manager.clone(),
+        };
+        let sidebar_for_drop = sidebar_list.clone();
+
+        let drop_target = ui::dnd::new_file_drop_target();
+
+        drop_target.connect_drop(move |target, value, _x, y| {
+            let Some(row) = sidebar_for_drop.row_at_y(y as i32) else {
+                return false;
+            };
+
+            let Some(destination) = sidebar::resolve_click(&row) else {
+                return false;
+            };
+
+            // Rows for recent *files* resolve to a file, not somewhere to
+            // put things.
+            if !destination.is_dir() {
+                return false;
+            }
+
+            handle_file_drop(&job_ui, target, value, destination)
+        });
+
+        sidebar_list.add_controller(drop_target);
     }
 
     // Tree View Toggle
@@ -2581,6 +3358,35 @@ fn build_ui(
         sidebar_list.add_controller(right_click);
     }
 
+    // Right-click Back or Forward: pick any earlier (or later) folder from a
+    // list, instead of stepping one at a time.
+    for (button, forward) in [(back_btn.clone(), false), (forward_btn.clone(), true)] {
+        let job_ui = JobUi::new(
+            &window,
+            &notebook,
+            &ctx,
+            &location_entry,
+            &search_entry,
+            &hidden_toggle,
+            &sidebar_list,
+            &watcher_manager,
+        );
+
+        // Weak: the button owns this gesture, which owns this closure.
+        let anchor = button.downgrade();
+
+        let right_click = gtk::GestureClick::new();
+        right_click.set_button(3);
+
+        right_click.connect_pressed(move |_gesture, _n_press, _x, _y| {
+            if let Some(anchor) = anchor.upgrade() {
+                show_history_menu(&anchor, forward, job_ui.clone());
+            }
+        });
+
+        button.add_controller(right_click);
+    }
+
     {
         let window_parent = window.clone();
         let notebook = notebook.clone();
@@ -2611,9 +3417,20 @@ fn build_ui(
                         }
                         let parent = tab_state.borrow().current.clone();
                         if let Err(err) = operations::create::create_folder(&parent, &name) {
-                            dialogs::show_error(
-                                &window_error,
-                                &format!("Could not create folder: {err}"),
+                            report_or_elevate(
+                                &JobUi::new(
+                                    &window_error,
+                                    &notebook,
+                                    &ctx,
+                                    &location_entry,
+                                    &search_entry,
+                                    &hidden_toggle,
+                                    &sidebar_list,
+                                    &watcher_manager,
+                                ),
+                                "create folder",
+                                &err,
+                                operations::privileged::Operation::CreateFolder(parent.join(&name)),
                             );
                         }
                         refresh_tab(
@@ -2662,9 +3479,20 @@ fn build_ui(
                         }
                         let parent = tab_state.borrow().current.clone();
                         if let Err(err) = operations::create::create_file(&parent, &name) {
-                            dialogs::show_error(
-                                &window_error,
-                                &format!("Could not create file: {err}"),
+                            report_or_elevate(
+                                &JobUi::new(
+                                    &window_error,
+                                    &notebook,
+                                    &ctx,
+                                    &location_entry,
+                                    &search_entry,
+                                    &hidden_toggle,
+                                    &sidebar_list,
+                                    &watcher_manager,
+                                ),
+                                "create file",
+                                &err,
+                                operations::privileged::Operation::CreateFile(parent.join(&name)),
                             );
                         }
                         refresh_tab(
@@ -2721,7 +3549,24 @@ fn build_ui(
                             return;
                         }
                         if let Err(err) = operations::rename::rename_path(&source, &name) {
-                            dialogs::show_error(&window_error, &format!("Could not rename: {err}"));
+                            report_or_elevate(
+                                &JobUi::new(
+                                    &window_error,
+                                    &notebook,
+                                    &ctx,
+                                    &location_entry,
+                                    &search_entry,
+                                    &hidden_toggle,
+                                    &sidebar_list,
+                                    &watcher_manager,
+                                ),
+                                "rename",
+                                &err,
+                                operations::privileged::Operation::Rename {
+                                    from: source.clone(),
+                                    to: source.with_file_name(&name),
+                                },
+                            );
                         }
                         refresh_tab(
                             &tab_state,
@@ -2750,7 +3595,7 @@ fn build_ui(
                     return;
                 }
                 let paths: Vec<PathBuf> = selected.iter().map(|item| item.get_path()).collect();
-                ctx.borrow_mut().pending = Some((PendingOp::Copy, paths));
+                set_clipboard_files(&notebook, &ctx, PendingOp::Copy, paths);
             }
         });
     }
@@ -2766,7 +3611,7 @@ fn build_ui(
                     return;
                 }
                 let paths: Vec<PathBuf> = selected.iter().map(|item| item.get_path()).collect();
-                ctx.borrow_mut().pending = Some((PendingOp::Move, paths));
+                set_clipboard_files(&notebook, &ctx, PendingOp::Move, paths);
             }
         });
     }
@@ -2782,28 +3627,16 @@ fn build_ui(
         let watcher_manager = watcher_manager.clone();
 
         paste_btn.connect_clicked(move |_| {
-            let pending = ctx.borrow_mut().pending.take();
-            let Some((operation, sources)) = pending else {
-                dialogs::show_info(&window_error, "Nothing to paste", NOTHING_TO_PASTE);
-                return;
-            };
-
-            if let Some((tab_state, _, _, _)) = get_active_widgets(&notebook) {
-                let destination_dir = tab_state.borrow().current.clone();
-                start_paste_job_ui(
-                    &window_error,
-                    &notebook,
-                    &ctx,
-                    &location_entry,
-                    &search_entry,
-                    &hidden_toggle,
-                    &sidebar_list,
-                    &watcher_manager,
-                    operation,
-                    sources,
-                    destination_dir,
-                );
-            }
+            paste_into_current_tab(JobUi {
+                window: window_error.clone(),
+                notebook: notebook.clone(),
+                ctx: ctx.clone(),
+                location_entry: location_entry.clone(),
+                search_entry: search_entry.clone(),
+                hidden_toggle: hidden_toggle.clone(),
+                sidebar_list: sidebar_list.clone(),
+                watcher_manager: watcher_manager.clone(),
+            });
         });
     }
 
@@ -3258,6 +4091,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
     let open_tab_btn = Button::with_label("Open in New Tab");
     let open_with_btn = Button::with_label("Open With");
     let compress_btn = Button::with_label("Compress to ZIP");
+    let compress_targz_btn = Button::with_label("Compress to TAR.GZ");
     let extract_btn = Button::with_label("Extract Here");
     let copy_btn = Button::with_label("Copy");
     let move_btn = Button::with_label("Move");
@@ -3267,8 +4101,28 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
     let open_in_split_btn = Button::with_label("Open in Split Pane");
     let rename_btn = Button::with_label("Rename");
     let batch_rename_btn = Button::with_label("Batch Rename");
+    let link_btn = Button::with_label("Create Link");
+    let copy_path_btn = Button::with_label("Copy Path");
     let trash_btn = Button::with_label("Trash");
+    let delete_btn = Button::with_label("Delete Permanently\u{2026}");
+    delete_btn.add_css_class("destructive-action");
     let properties_btn = Button::with_label("Properties");
+
+    // A link or a duplicate goes beside the original, so it needs the
+    // original's folder to be writable. (Rename, Trash and Delete stay
+    // enabled: when they fail for lack of permission they offer to retry as
+    // administrator.)
+    let parent_writable = items
+        .first()
+        .and_then(|item| {
+            item.get_path()
+                .parent()
+                .map(|parent| filesystem::access::can_write(parent))
+        })
+        .unwrap_or(true);
+
+    link_btn.set_sensitive(parent_writable);
+    duplicate_btn.set_sensitive(parent_writable);
 
     // The transfer-to-split entries only make sense while the pane is
     // actually showing, so they only appear then; "Open in Split Pane" is
@@ -3295,6 +4149,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
     menu_box.append(&open_tab_btn);
     menu_box.append(&open_with_btn);
     menu_box.append(&compress_btn);
+    menu_box.append(&compress_targz_btn);
     menu_box.append(&extract_btn);
     menu_box.append(&copy_btn);
     menu_box.append(&move_btn);
@@ -3311,7 +4166,10 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
 
     menu_box.append(&rename_btn);
     menu_box.append(&batch_rename_btn);
+    menu_box.append(&link_btn);
+    menu_box.append(&copy_path_btn);
     menu_box.append(&trash_btn);
+    menu_box.append(&delete_btn);
     menu_box.append(&properties_btn);
 
     // Plugin Actions
@@ -3347,7 +4205,16 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
         }
     }
 
-    popover.set_child(Some(&menu_box));
+    // With this many entries the menu can be taller than a small window, so
+    // it scrolls.
+    let scroller = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .max_content_height(480)
+        .propagate_natural_height(true)
+        .build();
+    scroller.set_child(Some(&menu_box));
+    popover.set_child(Some(&scroller));
 
     {
         let popover = popover.clone();
@@ -3585,23 +4452,25 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
 
     {
         let popover = popover.clone();
+        let window = window.clone();
         let ctx = ctx.clone();
         let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
 
         copy_btn.connect_clicked(move |_| {
             popover.popdown();
-            ctx.borrow_mut().pending = Some((PendingOp::Copy, paths.clone()));
+            set_clipboard_files(&window, &ctx, PendingOp::Copy, paths.clone());
         });
     }
 
     {
         let popover = popover.clone();
+        let window = window.clone();
         let ctx = ctx.clone();
         let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
 
         move_btn.connect_clicked(move |_| {
             popover.popdown();
-            ctx.borrow_mut().pending = Some((PendingOp::Move, paths.clone()));
+            set_clipboard_files(&window, &ctx, PendingOp::Move, paths.clone());
         });
     }
 
@@ -3639,6 +4508,82 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
                 let destination = split.state.borrow().current.clone();
                 run_quick_transfer(job_ui.clone(), operation, paths.clone(), destination);
             }
+        });
+    }
+
+    // Compress to TAR.GZ: like ZIP, but keeps permissions, timestamps and
+    // symlinks, which ZIP does poorly.
+    {
+        let popover = popover.clone();
+        let job_ui = job_ui.clone();
+        let sources: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
+
+        compress_targz_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            if let Some((tab_state, _, _, _)) = get_active_widgets(&job_ui.notebook) {
+                let destination_dir = tab_state.borrow().current.clone();
+                start_compress_tar_gz_job_ui(&job_ui, sources.clone(), destination_dir);
+            }
+        });
+    }
+
+    // Create Link: a symbolic link to each selected item, beside it.
+    {
+        let popover = popover.clone();
+        let job_ui = job_ui.clone();
+        let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
+
+        link_btn.connect_clicked(move |_| {
+            popover.popdown();
+
+            let mut first_error: Option<String> = None;
+
+            for path in &paths {
+                let Some(directory) = path.parent() else {
+                    continue;
+                };
+
+                if let Err(err) = operations::link::create_symlink(path, directory) {
+                    first_error.get_or_insert_with(|| {
+                        format!("Couldn't create a link to \"{}\": {err}", path.display())
+                    });
+                }
+            }
+
+            if let Some(message) = first_error {
+                dialogs::show_error(&job_ui.window, &message);
+            }
+
+            refresh_after_change(&job_ui);
+        });
+    }
+
+    // Copy Path: the full path(s) as text, ready to paste into a terminal.
+    {
+        let popover = popover.clone();
+        let window = window.clone();
+        let text = items
+            .iter()
+            .map(|item| item.get_path().display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        copy_path_btn.connect_clicked(move |_| {
+            popover.popdown();
+            ui::clipboard::set_text(&window, &text);
+        });
+    }
+
+    // Delete Permanently: skips the Trash, after confirmation.
+    {
+        let popover = popover.clone();
+        let job_ui = job_ui.clone();
+        let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
+
+        delete_btn.connect_clicked(move |_| {
+            popover.popdown();
+            confirm_and_delete_permanently(&job_ui, paths.clone());
         });
     }
 
@@ -3733,7 +4678,24 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
                         return;
                     }
                     if let Err(err) = operations::rename::rename_path(&source, &name) {
-                        dialogs::show_error(&window_error, &format!("Could not rename: {err}"));
+                        report_or_elevate(
+                            &JobUi::new(
+                                &window_error,
+                                &notebook,
+                                &ctx,
+                                &location_entry,
+                                &search_entry,
+                                &hidden_toggle,
+                                &sidebar_list,
+                                &watcher_manager,
+                            ),
+                            "rename",
+                            &err,
+                            operations::privileged::Operation::Rename {
+                                from: source.clone(),
+                                to: source.with_file_name(&name),
+                            },
+                        );
                     }
                     if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                         refresh_tab(
@@ -3956,13 +4918,6 @@ fn typeahead_select(
     }
 }
 
-fn filesystem_free_string(path: &PathBuf) -> String {
-    // Was reporting `symlink_metadata(path).len()` -- the size of the
-    // directory entry itself (typically a handful of KB), not free disk
-    // space. `metadata::free_space_string` uses `statvfs(3)` to report
-    // what's actually available on the partition that contains `path`.
-    metadata::free_space_string(path)
-}
 
 fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
     if let Some(app) = window.application() {
@@ -3970,6 +4925,154 @@ fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
         notification.set_body(Some(body));
         app.send_notification(None, &notification);
     }
+}
+
+/// How many entries the Back / Forward history menu lists.
+const HISTORY_MENU_LIMIT: usize = 12;
+
+/// The menu behind a right-click on Back (`forward` = false) or Forward:
+/// where it would go, nearest first, each one a jump straight there.
+fn show_history_menu(anchor: &Button, forward: bool, job_ui: JobUi) {
+    let Some((tab_state, _, _, _)) = get_active_widgets(&job_ui.notebook) else {
+        return;
+    };
+
+    let entries = if forward {
+        tab_state.borrow().history.forward_entries()
+    } else {
+        tab_state.borrow().history.back_entries()
+    };
+
+    if entries.is_empty() {
+        return;
+    }
+
+    let popover = gtk::Popover::new();
+    popover.set_has_arrow(true);
+    popover.set_autohide(true);
+    popover.set_parent(anchor);
+
+    let menu_box = GtkBox::new(Orientation::Vertical, 2);
+    menu_box.set_margin_top(6);
+    menu_box.set_margin_bottom(6);
+    menu_box.set_margin_start(6);
+    menu_box.set_margin_end(6);
+
+    for (index, path) in entries.iter().take(HISTORY_MENU_LIMIT).enumerate() {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+
+        let button = Button::with_label(&name);
+        button.set_has_frame(false);
+        button.set_halign(gtk::Align::Fill);
+        button.set_tooltip_text(Some(&path.display().to_string()));
+
+        // Weak, so the popover and its buttons aren't kept alive by their own
+        // click handlers.
+        let popover_weak = popover.downgrade();
+        let job_ui = job_ui.clone();
+
+        button.connect_clicked(move |_| {
+            if let Some(popover) = popover_weak.upgrade() {
+                popover.popdown();
+            }
+
+            let Some((tab_state, _, store, _)) = get_active_widgets(&job_ui.notebook) else {
+                return;
+            };
+
+            let current = tab_state.borrow().current.clone();
+
+            let target = if forward {
+                tab_state
+                    .borrow_mut()
+                    .history
+                    .jump_forward(index + 1, &current)
+            } else {
+                tab_state.borrow_mut().history.jump_back(index + 1, &current)
+            };
+
+            if let Some(target) = target {
+                tab_state.borrow_mut().current = target;
+
+                refresh_tab(
+                    &tab_state,
+                    &store,
+                    &job_ui.ctx,
+                    &job_ui.location_entry,
+                    &job_ui.search_entry,
+                    &job_ui.hidden_toggle,
+                    &job_ui.sidebar_list,
+                );
+
+                update_watcher(&job_ui.notebook, &job_ui.watcher_manager);
+            }
+        });
+
+        menu_box.append(&button);
+    }
+
+    popover.set_child(Some(&menu_box));
+
+    // A popover attached with `set_parent` stays a child of the button until
+    // it's unparented, so this one lets go as soon as it closes.
+    popover.connect_closed(|popover| popover.unparent());
+    popover.popup();
+}
+
+/// Right-click on a "Recent" row: clear the list.
+fn show_recent_context_menu(
+    sidebar_list: &ListBox,
+    location_entry: &Entry,
+    ctx: &Rc<RefCell<AppContext>>,
+    x: f64,
+    y: f64,
+) {
+    let popover = gtk::Popover::new();
+    popover.set_has_arrow(true);
+    popover.set_autohide(true);
+    popover.set_parent(sidebar_list);
+    popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+
+    let menu_box = GtkBox::new(Orientation::Vertical, 6);
+    menu_box.set_margin_top(6);
+    menu_box.set_margin_bottom(6);
+    menu_box.set_margin_start(6);
+    menu_box.set_margin_end(6);
+
+    let clear_btn = Button::with_label("Clear Recent Files");
+    let sidebar_list = sidebar_list.clone();
+    let location_entry = location_entry.clone();
+    let ctx = ctx.clone();
+    let popover_clone = popover.clone();
+
+    clear_btn.connect_clicked(move |_| {
+        popover_clone.popdown();
+
+        let _ = gtk::RecentManager::default().purge_items();
+
+        // The list is written out a moment later, so redo the sidebar now
+        // and again shortly after.
+        for delay_ms in [0u64, 400] {
+            let sidebar_list = sidebar_list.clone();
+            let location_entry = location_entry.clone();
+            let ctx = ctx.clone();
+
+            glib::timeout_add_local(std::time::Duration::from_millis(delay_ms), move || {
+                if let Some(win) = get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window") {
+                    sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
+                }
+
+                glib::ControlFlow::Break
+            });
+        }
+    });
+
+    menu_box.append(&clear_btn);
+    popover.set_child(Some(&menu_box));
+    popover.popup();
 }
 
 fn show_sidebar_context_menu(
@@ -4096,4 +5199,102 @@ fn show_default_app_picker(
     });
 
     dialog.window.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operations::jobs::{ConflictAction, PasteTask};
+    use crate::operations::privileged::{Operation, PasteKind};
+
+    #[test]
+    fn only_permission_failures_are_offered_an_administrator_retry() {
+        assert!(is_permission_error("Permission denied (os error 13)"));
+        assert!(is_permission_error("Operation not permitted (os error 1)"));
+        assert!(!is_permission_error("No such file or directory (os error 2)"));
+        assert!(!is_permission_error("No space left on device (os error 28)"));
+    }
+
+    #[test]
+    fn a_failed_delete_can_be_retried_and_a_failed_trash_becomes_a_permanent_delete() {
+        let paths = vec![PathBuf::from("/root/secret")];
+
+        let delete = elevated_retry_for(&JobRequest::Delete {
+            paths: paths.clone(),
+        })
+        .expect("delete has an administrator retry");
+        assert_eq!(delete.operation, Operation::Delete(paths.clone()));
+
+        let trash = elevated_retry_for(&JobRequest::Trash {
+            paths: paths.clone(),
+        })
+        .expect("trash has an administrator retry");
+        assert_eq!(trash.operation, Operation::Delete(paths));
+        // The user is told it's permanent -- it isn't "the same thing, as root".
+        assert!(trash.prompt.contains("permanently"));
+    }
+
+    #[test]
+    fn a_paste_is_retried_task_for_task_minus_the_skipped_ones() {
+        let task = |name: &str, action| PasteTask {
+            source: PathBuf::from(format!("/src/{name}")),
+            destination: PathBuf::from(format!("/dest/{name}")),
+            action,
+        };
+
+        let retry = elevated_retry_for(&JobRequest::Paste {
+            operation: PendingOp::Move,
+            tasks: vec![
+                task("a", ConflictAction::KeepBoth),
+                task("b", ConflictAction::Replace),
+                task("c", ConflictAction::Skip),
+            ],
+        })
+        .expect("paste has an administrator retry");
+
+        match retry.operation {
+            Operation::Paste { kind, entries } => {
+                assert_eq!(kind, PasteKind::Move);
+                assert_eq!(entries.len(), 2);
+                assert!(!entries[0].replace);
+                assert!(entries[1].replace);
+                assert_eq!(entries[1].target, PathBuf::from("/dest/b"));
+            }
+            other => panic!("unexpected operation: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jobs_where_root_would_not_help_have_no_retry() {
+        assert!(elevated_retry_for(&JobRequest::BatchRename { renames: Vec::new() }).is_none());
+        assert!(elevated_retry_for(&JobRequest::ExtractArchive {
+            archive_path: PathBuf::from("/a.zip"),
+            destination_dir: PathBuf::from("/b"),
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn permission_denied_is_recognised_inside_file_manager_errors() {
+        let denied = error::FileManagerError::Io(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ));
+        let missing =
+            error::FileManagerError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
+
+        assert!(is_permission_denied(&denied));
+        assert!(!is_permission_denied(&missing));
+        assert!(!is_permission_denied(&error::FileManagerError::InvalidName));
+    }
+
+    #[test]
+    fn the_trash_folder_is_recognised_by_its_path() {
+        // (No user data directory at all -- HOME unset -- means no trash to
+        // recognise, which is fine.)
+        if let Some(data) = dirs::data_dir() {
+            assert!(is_trash_files_dir(&data.join("Trash/files")));
+        }
+
+        assert!(!is_trash_files_dir(Path::new("/tmp")));
+    }
 }
