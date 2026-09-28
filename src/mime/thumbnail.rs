@@ -173,7 +173,9 @@ fn generate_image_thumbnail(path: &Path) -> Option<String> {
     let parent = target.parent()?;
     std::fs::create_dir_all(parent).ok()?;
 
-    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, THUMBNAIL_SIZE, THUMBNAIL_SIZE, true).ok()?;
+    let pixbuf =
+        gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, THUMBNAIL_SIZE, THUMBNAIL_SIZE, true)
+            .ok()?;
     // Phone photos are stored sideways with an "orientation" flag.
     let pixbuf = pixbuf.apply_embedded_orientation().unwrap_or(pixbuf);
 

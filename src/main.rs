@@ -353,7 +353,11 @@ fn paste_into_current_tab(job_ui: JobUi) {
         };
 
         let Some((operation, sources)) = plan else {
-            dialogs::show_info(&job_ui.window, &i18n::tr("Nothing to paste"), &i18n::tr(NOTHING_TO_PASTE));
+            dialogs::show_info(
+                &job_ui.window,
+                &i18n::tr("Nothing to paste"),
+                &i18n::tr(NOTHING_TO_PASTE),
+            );
             return;
         };
 
@@ -449,8 +453,7 @@ fn run_quick_transfer(
         status_label.set_label(&format!("{verb} {} item(s)…", sources.len()));
     }
 
-    let (sender, receiver) =
-        async_channel::bounded::<Result<Vec<(PathBuf, PathBuf)>, String>>(1);
+    let (sender, receiver) = async_channel::bounded::<Result<Vec<(PathBuf, PathBuf)>, String>>(1);
 
     std::thread::spawn(move || {
         let result = operations::paste_pending(&destination, operation, &sources)
@@ -588,9 +591,7 @@ fn portal_reply(result: Result<gio::File, glib::Error>) -> portal::service::Port
             // with no FUSE mount, say). A caller expecting a filesystem
             // path can't do anything with an empty string, so report the
             // failure instead of pretending a selection was made.
-            None => PortalResponse::Error(
-                "The selected location has no local path".to_string(),
-            ),
+            None => PortalResponse::Error("The selected location has no local path".to_string()),
         },
         // Dismissed, or closed without choosing anything.
         Err(_) => PortalResponse::Cancelled,
@@ -701,8 +702,7 @@ fn start_compress_zip_job_ui(
         return;
     }
 
-    let archive_path =
-        operations::archive::default_archive_path(&destination_dir, &sources, "zip");
+    let archive_path = operations::archive::default_archive_path(&destination_dir, &sources, "zip");
 
     let Some(queue) = get_obj_data::<_, JobQueue>(location_entry, "job-queue") else {
         return;
@@ -998,8 +998,9 @@ fn elevated_retry_for(request: &JobRequest) -> Option<ElevatedRetry> {
 
             Some(ElevatedRetry {
                 operation: Operation::Paste { kind, entries },
-                prompt: "MITOS Files doesn't have permission to do this. Retry it as administrator?"
-                    .to_string(),
+                prompt:
+                    "MITOS Files doesn't have permission to do this. Retry it as administrator?"
+                        .to_string(),
             })
         }
         JobRequest::Delete { paths } => Some(ElevatedRetry {
@@ -1066,7 +1067,9 @@ fn offer_elevated_retry(job_ui: &JobUi, retry: &ElevatedRetry, error: &str) {
 /// the outcome.
 fn run_elevated(job_ui: JobUi, operation: operations::privileged::Operation) {
     if let Some(status_label) = get_obj_data::<_, Label>(&job_ui.location_entry, "status-label") {
-        status_label.set_label(&i18n::tr("Waiting for administrator authentication\u{2026}"));
+        status_label.set_label(&i18n::tr(
+            "Waiting for administrator authentication\u{2026}",
+        ));
     }
 
     let (sender, receiver) = async_channel::bounded::<Result<(), String>>(1);
@@ -1257,88 +1260,93 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
         handle,
         receiver,
         move |result, transferred| {
-        // Native desktop notification via the session notification daemon
-        match &result {
-            Ok(count) => send_job_notification(
-                &window_error,
-                &i18n::tr("Operation complete"),
-                &format!("{}: {count} item(s) processed", i18n::tr(title)),
-            ),
-            Err(err) if err.contains("Cancelled") => {
-                send_job_notification(&window_error, &i18n::tr("Operation cancelled"), &i18n::tr(title));
-            }
-            Err(err) => {
-                send_job_notification(
+            // Native desktop notification via the session notification daemon
+            match &result {
+                Ok(count) => send_job_notification(
                     &window_error,
-                    &i18n::tr("Operation failed"),
-                    &format!("{}: {err}", i18n::tr(title)),
+                    &i18n::tr("Operation complete"),
+                    &format!("{}: {count} item(s) processed", i18n::tr(title)),
+                ),
+                Err(err) if err.contains("Cancelled") => {
+                    send_job_notification(
+                        &window_error,
+                        &i18n::tr("Operation cancelled"),
+                        &i18n::tr(title),
+                    );
+                }
+                Err(err) => {
+                    send_job_notification(
+                        &window_error,
+                        &i18n::tr("Operation failed"),
+                        &format!("{}: {err}", i18n::tr(title)),
+                    );
+                }
+            }
+
+            // Record what just happened as undoable, if it's a kind of job
+            // that can be.
+            if result.is_ok() {
+                let action = match &pending_undo {
+                    PendingUndo::Paste(operation) if !transferred.is_empty() => {
+                        Some(operations::undo::UndoableAction::Pasted {
+                            operation: *operation,
+                            pairs: transferred,
+                        })
+                    }
+                    PendingUndo::Trash(paths) => {
+                        let items = operations::undo::find_recently_trashed(paths);
+
+                        if items.is_empty() {
+                            None
+                        } else {
+                            Some(operations::undo::UndoableAction::Trashed { items })
+                        }
+                    }
+                    PendingUndo::BatchRename(renames) => {
+                        Some(operations::undo::UndoableAction::BatchRenamed {
+                            renames: renames.clone(),
+                        })
+                    }
+                    _ => None,
+                };
+
+                if let Some(action) = action {
+                    ctx.borrow_mut().push_undo(action);
+                }
+            }
+
+            if let Err(ref err) = result {
+                if !err.contains("Cancelled") {
+                    match &elevated_retry {
+                        // Not allowed to: offer to do it as administrator.
+                        Some(retry) if is_permission_error(err) => {
+                            offer_elevated_retry(&ui_for_done, retry, err);
+                        }
+                        _ => dialogs::show_error(&window_error, &format!("Job failed: {err}")),
+                    }
+                }
+            }
+
+            if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
+                refresh_tab(
+                    &tab_state,
+                    &store,
+                    &ctx,
+                    &location_entry,
+                    &search_entry,
+                    &hidden_toggle,
+                    &sidebar_list,
                 );
+
+                update_watcher(&notebook, &watcher_manager);
             }
-        }
 
-        // Record what just happened as undoable, if it's a kind of job
-        // that can be.
-        if result.is_ok() {
-            let action = match &pending_undo {
-                PendingUndo::Paste(operation) if !transferred.is_empty() => {
-                    Some(operations::undo::UndoableAction::Pasted {
-                        operation: *operation,
-                        pairs: transferred,
-                    })
-                }
-                PendingUndo::Trash(paths) => {
-                    let items = operations::undo::find_recently_trashed(paths);
+            // Copies/moves/trashing may have touched the split pane's folder.
+            refresh_split_pane(&location_entry);
 
-                    if items.is_empty() {
-                        None
-                    } else {
-                        Some(operations::undo::UndoableAction::Trashed { items })
-                    }
-                }
-                PendingUndo::BatchRename(renames) => {
-                    Some(operations::undo::UndoableAction::BatchRenamed {
-                        renames: renames.clone(),
-                    })
-                }
-                _ => None,
-            };
-
-            if let Some(action) = action {
-                ctx.borrow_mut().push_undo(action);
-            }
-        }
-
-        if let Err(ref err) = result {
-            if !err.contains("Cancelled") {
-                match &elevated_retry {
-                    // Not allowed to: offer to do it as administrator.
-                    Some(retry) if is_permission_error(err) => {
-                        offer_elevated_retry(&ui_for_done, retry, err);
-                    }
-                    _ => dialogs::show_error(&window_error, &format!("Job failed: {err}")),
-                }
-            }
-        }
-
-        if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-            refresh_tab(
-                &tab_state,
-                &store,
-                &ctx,
-                &location_entry,
-                &search_entry,
-                &hidden_toggle,
-                &sidebar_list,
-            );
-
-            update_watcher(&notebook, &watcher_manager);
-        }
-
-        // Copies/moves/trashing may have touched the split pane's folder.
-        refresh_split_pane(&location_entry);
-
-        start_next_job(&queue_for_done, ui_for_done.clone());
-    });
+            start_next_job(&queue_for_done, ui_for_done.clone());
+        },
+    );
 }
 
 fn refresh_tab(
@@ -2404,7 +2412,8 @@ fn build_ui(
                 return None;
             }
 
-            let files: Vec<gio::File> = paths.iter().map(|path| gio::File::for_path(path)).collect();
+            let files: Vec<gio::File> =
+                paths.iter().map(|path| gio::File::for_path(path)).collect();
             let file_list = gtk::gdk::FileList::from_array(&files);
 
             Some(gtk::gdk::ContentProvider::for_value(&file_list.to_value()))
@@ -2912,16 +2921,16 @@ fn build_ui(
 
             // Entry 0 of the dropdown is "All types"; entry N is
             // `FileTypeFilter::all()[N - 1]`.
-            let file_types: Vec<search::filters::FileTypeFilter> =
-                (search_type_dropdown.selected() as usize)
-                    .checked_sub(1)
-                    .and_then(|index| {
-                        search::filters::FileTypeFilter::all()
-                            .into_iter()
-                            .nth(index)
-                    })
-                    .into_iter()
-                    .collect();
+            let file_types: Vec<search::filters::FileTypeFilter> = (search_type_dropdown.selected()
+                as usize)
+                .checked_sub(1)
+                .and_then(|index| {
+                    search::filters::FileTypeFilter::all()
+                        .into_iter()
+                        .nth(index)
+                })
+                .into_iter()
+                .collect();
 
             // Nothing typed and no type chosen: back to the plain folder view.
             if query.is_empty() && file_types.is_empty() {
@@ -2995,9 +3004,8 @@ fn build_ui(
 
             let location_entry = location_entry.clone();
 
-            glib::timeout_add_local(
-                std::time::Duration::from_millis(50),
-                move || match rx.try_recv() {
+            glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                match rx.try_recv() {
                     Ok(results) => {
                         // The tab may have moved to another folder while the
                         // search ran; results for the old one would replace
@@ -3046,8 +3054,8 @@ fn build_ui(
                     // search cancelled it, and that one owns the grid now.
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
                     Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                },
-            );
+                }
+            });
         });
     }
 
@@ -3610,54 +3618,57 @@ fn build_ui(
                     &i18n::tr("New Folder"),
                     &i18n::tr("Create"),
                     {
-                    let window_error = window_parent.clone();
-                    let tab_state = tab_state.clone();
-                    let store = store.clone();
-                    let ctx = ctx.clone();
-                    let location_entry = location_entry.clone();
-                    let search_entry = search_entry.clone();
-                    let hidden_toggle = hidden_toggle.clone();
-                    let sidebar_list = sidebar_list.clone();
-                    let watcher_manager = watcher_manager.clone();
-                    let notebook = notebook.clone();
+                        let window_error = window_parent.clone();
+                        let tab_state = tab_state.clone();
+                        let store = store.clone();
+                        let ctx = ctx.clone();
+                        let location_entry = location_entry.clone();
+                        let search_entry = search_entry.clone();
+                        let hidden_toggle = hidden_toggle.clone();
+                        let sidebar_list = sidebar_list.clone();
+                        let watcher_manager = watcher_manager.clone();
+                        let notebook = notebook.clone();
 
-                    move |name| {
-                        if name.is_empty() {
-                            return;
-                        }
-                        let parent = tab_state.borrow().current.clone();
-                        match operations::create::create_folder(&parent, &name) {
-                            Ok(path) => ctx.borrow_mut().push_undo(
-                                operations::undo::UndoableAction::CreatedFolder { path },
-                            ),
-                            Err(err) => report_or_elevate(
-                                &JobUi::new(
-                                    &window_error,
-                                    &notebook,
-                                    &ctx,
-                                    &location_entry,
-                                    &search_entry,
-                                    &hidden_toggle,
-                                    &sidebar_list,
-                                    &watcher_manager,
+                        move |name| {
+                            if name.is_empty() {
+                                return;
+                            }
+                            let parent = tab_state.borrow().current.clone();
+                            match operations::create::create_folder(&parent, &name) {
+                                Ok(path) => ctx.borrow_mut().push_undo(
+                                    operations::undo::UndoableAction::CreatedFolder { path },
                                 ),
-                                "create folder",
-                                &err,
-                                operations::privileged::Operation::CreateFolder(parent.join(&name)),
-                            ),
+                                Err(err) => report_or_elevate(
+                                    &JobUi::new(
+                                        &window_error,
+                                        &notebook,
+                                        &ctx,
+                                        &location_entry,
+                                        &search_entry,
+                                        &hidden_toggle,
+                                        &sidebar_list,
+                                        &watcher_manager,
+                                    ),
+                                    "create folder",
+                                    &err,
+                                    operations::privileged::Operation::CreateFolder(
+                                        parent.join(&name),
+                                    ),
+                                ),
+                            }
+                            refresh_tab(
+                                &tab_state,
+                                &store,
+                                &ctx,
+                                &location_entry,
+                                &search_entry,
+                                &hidden_toggle,
+                                &sidebar_list,
+                            );
+                            update_watcher(&notebook, &watcher_manager);
                         }
-                        refresh_tab(
-                            &tab_state,
-                            &store,
-                            &ctx,
-                            &location_entry,
-                            &search_entry,
-                            &hidden_toggle,
-                            &sidebar_list,
-                        );
-                        update_watcher(&notebook, &watcher_manager);
-                    }
-                });
+                    },
+                );
             }
         });
     }
@@ -3680,54 +3691,57 @@ fn build_ui(
                     "new-file.txt",
                     &i18n::tr("Create"),
                     {
-                    let window_error = window_parent.clone();
-                    let tab_state = tab_state.clone();
-                    let store = store.clone();
-                    let ctx = ctx.clone();
-                    let location_entry = location_entry.clone();
-                    let search_entry = search_entry.clone();
-                    let hidden_toggle = hidden_toggle.clone();
-                    let sidebar_list = sidebar_list.clone();
-                    let watcher_manager = watcher_manager.clone();
-                    let notebook = notebook.clone();
+                        let window_error = window_parent.clone();
+                        let tab_state = tab_state.clone();
+                        let store = store.clone();
+                        let ctx = ctx.clone();
+                        let location_entry = location_entry.clone();
+                        let search_entry = search_entry.clone();
+                        let hidden_toggle = hidden_toggle.clone();
+                        let sidebar_list = sidebar_list.clone();
+                        let watcher_manager = watcher_manager.clone();
+                        let notebook = notebook.clone();
 
-                    move |name| {
-                        if name.is_empty() {
-                            return;
-                        }
-                        let parent = tab_state.borrow().current.clone();
-                        match operations::create::create_file(&parent, &name) {
-                            Ok(path) => ctx.borrow_mut().push_undo(
-                                operations::undo::UndoableAction::CreatedFile { path },
-                            ),
-                            Err(err) => report_or_elevate(
-                                &JobUi::new(
-                                    &window_error,
-                                    &notebook,
-                                    &ctx,
-                                    &location_entry,
-                                    &search_entry,
-                                    &hidden_toggle,
-                                    &sidebar_list,
-                                    &watcher_manager,
+                        move |name| {
+                            if name.is_empty() {
+                                return;
+                            }
+                            let parent = tab_state.borrow().current.clone();
+                            match operations::create::create_file(&parent, &name) {
+                                Ok(path) => ctx.borrow_mut().push_undo(
+                                    operations::undo::UndoableAction::CreatedFile { path },
                                 ),
-                                "create file",
-                                &err,
-                                operations::privileged::Operation::CreateFile(parent.join(&name)),
-                            ),
+                                Err(err) => report_or_elevate(
+                                    &JobUi::new(
+                                        &window_error,
+                                        &notebook,
+                                        &ctx,
+                                        &location_entry,
+                                        &search_entry,
+                                        &hidden_toggle,
+                                        &sidebar_list,
+                                        &watcher_manager,
+                                    ),
+                                    "create file",
+                                    &err,
+                                    operations::privileged::Operation::CreateFile(
+                                        parent.join(&name),
+                                    ),
+                                ),
+                            }
+                            refresh_tab(
+                                &tab_state,
+                                &store,
+                                &ctx,
+                                &location_entry,
+                                &search_entry,
+                                &hidden_toggle,
+                                &sidebar_list,
+                            );
+                            update_watcher(&notebook, &watcher_manager);
                         }
-                        refresh_tab(
-                            &tab_state,
-                            &store,
-                            &ctx,
-                            &location_entry,
-                            &search_entry,
-                            &hidden_toggle,
-                            &sidebar_list,
-                        );
-                        update_watcher(&notebook, &watcher_manager);
-                    }
-                });
+                    },
+                );
             }
         });
     }
@@ -3759,63 +3773,64 @@ fn build_ui(
                     &initial_name,
                     &i18n::tr("Rename"),
                     {
-                    let window_error = window_parent.clone();
-                    let tab_state = tab_state.clone();
-                    let store = store.clone();
-                    let ctx = ctx.clone();
-                    let location_entry = location_entry.clone();
-                    let search_entry = search_entry.clone();
-                    let hidden_toggle = hidden_toggle.clone();
-                    let sidebar_list = sidebar_list.clone();
-                    let watcher_manager = watcher_manager.clone();
-                    let notebook = notebook.clone();
+                        let window_error = window_parent.clone();
+                        let tab_state = tab_state.clone();
+                        let store = store.clone();
+                        let ctx = ctx.clone();
+                        let location_entry = location_entry.clone();
+                        let search_entry = search_entry.clone();
+                        let hidden_toggle = hidden_toggle.clone();
+                        let sidebar_list = sidebar_list.clone();
+                        let watcher_manager = watcher_manager.clone();
+                        let notebook = notebook.clone();
 
-                    move |name| {
-                        if name.is_empty() {
-                            return;
-                        }
-                        match operations::rename::rename_path(&source, &name) {
-                            Ok(new_path) => {
-                                ctx.borrow_mut().push_undo(
-                                    operations::undo::UndoableAction::Renamed {
-                                        from: source.clone(),
-                                        to: new_path,
-                                    },
-                                );
+                        move |name| {
+                            if name.is_empty() {
+                                return;
                             }
-                            Err(err) => {
-                                report_or_elevate(
-                                    &JobUi::new(
-                                        &window_error,
-                                        &notebook,
-                                        &ctx,
-                                        &location_entry,
-                                        &search_entry,
-                                        &hidden_toggle,
-                                        &sidebar_list,
-                                        &watcher_manager,
-                                    ),
-                                    "rename",
-                                    &err,
-                                    operations::privileged::Operation::Rename {
-                                        from: source.clone(),
-                                        to: source.with_file_name(&name),
-                                    },
-                                );
+                            match operations::rename::rename_path(&source, &name) {
+                                Ok(new_path) => {
+                                    ctx.borrow_mut().push_undo(
+                                        operations::undo::UndoableAction::Renamed {
+                                            from: source.clone(),
+                                            to: new_path,
+                                        },
+                                    );
+                                }
+                                Err(err) => {
+                                    report_or_elevate(
+                                        &JobUi::new(
+                                            &window_error,
+                                            &notebook,
+                                            &ctx,
+                                            &location_entry,
+                                            &search_entry,
+                                            &hidden_toggle,
+                                            &sidebar_list,
+                                            &watcher_manager,
+                                        ),
+                                        "rename",
+                                        &err,
+                                        operations::privileged::Operation::Rename {
+                                            from: source.clone(),
+                                            to: source.with_file_name(&name),
+                                        },
+                                    );
+                                }
                             }
+                            refresh_tab(
+                                &tab_state,
+                                &store,
+                                &ctx,
+                                &location_entry,
+                                &search_entry,
+                                &hidden_toggle,
+                                &sidebar_list,
+                            );
+                            update_watcher(&notebook, &watcher_manager);
                         }
-                        refresh_tab(
-                            &tab_state,
-                            &store,
-                            &ctx,
-                            &location_entry,
-                            &search_entry,
-                            &hidden_toggle,
-                            &sidebar_list,
-                        );
-                        update_watcher(&notebook, &watcher_manager);
-                    }
-                });
+                    },
+                );
             }
         });
     }
@@ -4926,10 +4941,11 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
                     }
                     match operations::rename::rename_path(&source, &name) {
                         Ok(new_path) => {
-                            ctx.borrow_mut().push_undo(operations::undo::UndoableAction::Renamed {
-                                from: source.clone(),
-                                to: new_path,
-                            });
+                            ctx.borrow_mut()
+                                .push_undo(operations::undo::UndoableAction::Renamed {
+                                    from: source.clone(),
+                                    to: new_path,
+                                });
                         }
                         Err(err) => {
                             report_or_elevate(
@@ -5173,7 +5189,6 @@ fn typeahead_select(
     }
 }
 
-
 fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
     if let Some(app) = window.application() {
         let notification = gio::Notification::new(title);
@@ -5246,7 +5261,10 @@ fn show_history_menu(anchor: &Button, forward: bool, job_ui: JobUi) {
                     .history
                     .jump_forward(index + 1, &current)
             } else {
-                tab_state.borrow_mut().history.jump_back(index + 1, &current)
+                tab_state
+                    .borrow_mut()
+                    .history
+                    .jump_back(index + 1, &current)
             };
 
             if let Some(target) = target {
@@ -5372,9 +5390,7 @@ fn open_network_location(job_ui: JobUi, uri: String) {
                 Some(path) => navigate_active_tab_to(&job_ui, path),
                 None => dialogs::show_error(
                     &job_ui.window,
-                    &i18n::tr(
-                        "Connected, but MITOS Files couldn't resolve a local path for it.",
-                    ),
+                    &i18n::tr("Connected, but MITOS Files couldn't resolve a local path for it."),
                 ),
             },
             Err(err) => {
@@ -5422,7 +5438,9 @@ fn show_recent_context_menu(
             let ctx = ctx.clone();
 
             glib::timeout_add_local(std::time::Duration::from_millis(delay_ms), move || {
-                if let Some(win) = get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window") {
+                if let Some(win) =
+                    get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window")
+                {
                     sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
                 }
 
@@ -5572,8 +5590,12 @@ mod tests {
     fn only_permission_failures_are_offered_an_administrator_retry() {
         assert!(is_permission_error("Permission denied (os error 13)"));
         assert!(is_permission_error("Operation not permitted (os error 1)"));
-        assert!(!is_permission_error("No such file or directory (os error 2)"));
-        assert!(!is_permission_error("No space left on device (os error 28)"));
+        assert!(!is_permission_error(
+            "No such file or directory (os error 2)"
+        ));
+        assert!(!is_permission_error(
+            "No space left on device (os error 28)"
+        ));
     }
 
     #[test]
@@ -5627,7 +5649,10 @@ mod tests {
 
     #[test]
     fn jobs_where_root_would_not_help_have_no_retry() {
-        assert!(elevated_retry_for(&JobRequest::BatchRename { renames: Vec::new() }).is_none());
+        assert!(elevated_retry_for(&JobRequest::BatchRename {
+            renames: Vec::new()
+        })
+        .is_none());
         assert!(elevated_retry_for(&JobRequest::ExtractArchive {
             archive_path: PathBuf::from("/a.zip"),
             destination_dir: PathBuf::from("/b"),
@@ -5637,9 +5662,8 @@ mod tests {
 
     #[test]
     fn permission_denied_is_recognised_inside_file_manager_errors() {
-        let denied = error::FileManagerError::Io(std::io::Error::from(
-            std::io::ErrorKind::PermissionDenied,
-        ));
+        let denied =
+            error::FileManagerError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         let missing =
             error::FileManagerError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
 

@@ -173,7 +173,10 @@ pub fn show_progress_dialog<F>(
                     bar.set_text(Some(&detail));
                 }
 
-                JobMessage::Transferred { source, destination } => {
+                JobMessage::Transferred {
+                    source,
+                    destination,
+                } => {
                     transferred.push((source, destination));
                 }
 

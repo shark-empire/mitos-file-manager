@@ -190,7 +190,8 @@ pub fn undo(action: &UndoableAction) -> Result<UndoResult, String> {
                 })
             }
             PendingOp::Move => {
-                let (undone, failures) = move_all(pairs.iter().map(|(src, dest)| (dest.clone(), src.clone())));
+                let (undone, failures) =
+                    move_all(pairs.iter().map(|(src, dest)| (dest.clone(), src.clone())));
 
                 if undone == 0 && !pairs.is_empty() {
                     return Err(too_stale_to_undo("move back", &failures));
@@ -209,7 +210,8 @@ pub fn undo(action: &UndoableAction) -> Result<UndoResult, String> {
                 .map(|(from, to)| (to.clone(), from.clone()))
                 .collect();
 
-            run_reversible_batch(&reversed).map_err(|err| format!("Couldn't undo the rename: {err}"))?;
+            run_reversible_batch(&reversed)
+                .map_err(|err| format!("Couldn't undo the rename: {err}"))?;
 
             ok(
                 format!("Undid renaming {} items", renames.len()),
@@ -232,7 +234,8 @@ pub fn redo(action: &UndoableAction) -> Result<UndoResult, String> {
         }
 
         UndoableAction::CreatedFolder { path } => {
-            fs::create_dir(path).map_err(|err| describe_io_error("create the folder again", err))?;
+            fs::create_dir(path)
+                .map_err(|err| describe_io_error("create the folder again", err))?;
             ok(
                 format!("Redid: created \"{}\"", display_name(path)),
                 action.clone(),
@@ -324,7 +327,8 @@ pub fn redo(action: &UndoableAction) -> Result<UndoResult, String> {
         },
 
         UndoableAction::BatchRenamed { renames } => {
-            run_reversible_batch(renames).map_err(|err| format!("Couldn't redo the rename: {err}"))?;
+            run_reversible_batch(renames)
+                .map_err(|err| format!("Couldn't redo the rename: {err}"))?;
 
             ok(
                 format!("Redid renaming {} items", renames.len()),
@@ -562,7 +566,12 @@ fn partial_message(verb: &str, done: usize, of: usize) -> String {
     if done == of {
         describe_count(verb, done)
     } else {
-        format!("{} ({} of {} \u{2014} the rest had already changed)", describe_count(verb, done), done, of)
+        format!(
+            "{} ({} of {} \u{2014} the rest had already changed)",
+            describe_count(verb, done),
+            done,
+            of
+        )
     }
 }
 
@@ -577,7 +586,10 @@ mod tests {
         let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
         fs::write(&a, "hi").unwrap();
 
-        let action = UndoableAction::Renamed { from: a.clone(), to: b.clone() };
+        let action = UndoableAction::Renamed {
+            from: a.clone(),
+            to: b.clone(),
+        };
         fs::rename(&a, &b).unwrap();
 
         let undone = undo(&action).unwrap();
@@ -597,9 +609,15 @@ mod tests {
         fs::write(&b, "renamed").unwrap();
         fs::write(&a, "unrelated, appeared after the rename").unwrap();
 
-        let action = UndoableAction::Renamed { from: a.clone(), to: b.clone() };
+        let action = UndoableAction::Renamed {
+            from: a.clone(),
+            to: b.clone(),
+        };
         assert!(undo(&action).is_err());
-        assert_eq!(fs::read_to_string(&a).unwrap(), "unrelated, appeared after the rename");
+        assert_eq!(
+            fs::read_to_string(&a).unwrap(),
+            "unrelated, appeared after the rename"
+        );
         assert_eq!(fs::read_to_string(&b).unwrap(), "renamed");
 
         let _ = fs::remove_dir_all(&dir);
@@ -611,7 +629,9 @@ mod tests {
         let folder = dir.join("New Folder");
         fs::create_dir(&folder).unwrap();
 
-        let action = UndoableAction::CreatedFolder { path: folder.clone() };
+        let action = UndoableAction::CreatedFolder {
+            path: folder.clone(),
+        };
 
         // Something was added before Undo was pressed: refuse.
         fs::write(folder.join("keep.txt"), "important").unwrap();

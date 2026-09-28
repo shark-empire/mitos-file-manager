@@ -158,7 +158,9 @@ pub fn init_from_setting(stored_code: &str) {
 }
 
 fn catalog_for(lang: Lang) -> Option<&'static HashMap<&'static str, &'static str>> {
-    fn build(table: &'static [(&'static str, &'static str)]) -> HashMap<&'static str, &'static str> {
+    fn build(
+        table: &'static [(&'static str, &'static str)],
+    ) -> HashMap<&'static str, &'static str> {
         table.iter().copied().collect()
     }
 
@@ -214,7 +216,10 @@ mod tests {
     #[test]
     fn english_is_the_fallback_for_every_language() {
         with_lang(Lang::Fr, || {
-            assert_eq!(tr("Some string nobody has translated yet"), "Some string nobody has translated yet");
+            assert_eq!(
+                tr("Some string nobody has translated yet"),
+                "Some string nobody has translated yet"
+            );
         });
     }
 

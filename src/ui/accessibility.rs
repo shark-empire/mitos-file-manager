@@ -33,7 +33,10 @@ pub fn setup_keyboard_help() -> Vec<(String, String)> {
             tr("Delete selected files permanently"),
         ),
         ("Ctrl+Z".to_string(), tr("Undo the last action")),
-        ("Ctrl+Shift+Z".to_string(), tr("Redo the last undone action")),
+        (
+            "Ctrl+Shift+Z".to_string(),
+            tr("Redo the last undone action"),
+        ),
         ("Ctrl+F".to_string(), tr("Search")),
         (
             "Alt+Up / Backspace".to_string(),
