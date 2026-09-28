@@ -1,5 +1,7 @@
 use gtk::prelude::*;
 
+use crate::filesystem::access;
+use crate::i18n::tr;
 use crate::ui::item_object::ItemObject;
 use crate::util::{get_obj_data, set_obj_data};
 
@@ -23,13 +25,23 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
         let label = gtk::Label::new(None);
         label.set_halign(gtk::Align::Start);
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.set_hexpand(true);
+
+        // Shown only for an item you can't write to -- see the bind
+        // closure below and `filesystem::access::can_write`.
+        let lock_icon = gtk::Image::from_icon_name("changes-prevent-symbolic");
+        lock_icon.set_pixel_size(14);
+        lock_icon.set_visible(false);
+        lock_icon.add_css_class("dim-label");
 
         row.append(&icon);
         row.append(&label);
+        row.append(&lock_icon);
 
         list_item.set_child(Some(&row));
         set_obj_data(list_item, "icon", icon);
         set_obj_data(list_item, "label", label);
+        set_obj_data(list_item, "lock-icon", lock_icon);
     });
 
     name_factory.connect_bind(|_, list_item| {
@@ -44,10 +56,24 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
 
         let icon: Option<gtk::Image> = get_obj_data(list_item, "icon");
         let label: Option<gtk::Label> = get_obj_data(list_item, "label");
+        let lock_icon: Option<gtk::Image> = get_obj_data(list_item, "lock-icon");
 
         if let (Some(icon), Some(label)) = (icon, label) {
             icon.set_icon_name(Some(&obj.icon_name()));
             label.set_label(&obj.name());
+        }
+
+        if let Some(lock_icon) = lock_icon {
+            // One `access(2)` call, only for rows actually on screen (list
+            // views virtualize -- bind only fires for visible rows).
+            let locked = !access::can_write(&obj.get_path());
+            lock_icon.set_visible(locked);
+
+            if locked {
+                lock_icon.set_tooltip_text(Some(&tr(
+                    "Read-only \u{2014} you don't have permission to change this",
+                )));
+            }
         }
     });
 
@@ -63,7 +89,7 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
         a.cmp(&b).into()
     });
 
-    let name_column = gtk::ColumnViewColumn::new(Some("Name"), Some(name_factory));
+    let name_column = gtk::ColumnViewColumn::new(Some(&tr("Name")), Some(name_factory));
     name_column.set_sorter(Some(&name_sorter));
     name_column.set_resizable(true);
     name_column.set_expand(true);
@@ -74,19 +100,19 @@ pub fn create_list_view(selection: &gtk::MultiSelection) -> gtk::ColumnView {
     // ------------------------------------------------------------
 
     view.append_column(&text_column(
-        "Size",
+        &tr("Size"),
         |o| o.size_str(),
         |a, b| a.size().cmp(&b.size()),
     ));
 
     view.append_column(&text_column(
-        "Type",
+        &tr("Type"),
         |o| o.mime_type(),
         |a, b| a.mime_type().cmp(&b.mime_type()),
     ));
 
     view.append_column(&text_column(
-        "Modified",
+        &tr("Modified"),
         |o| o.modified_str(),
         |a, b| a.modified_secs().cmp(&b.modified_secs()),
     ));

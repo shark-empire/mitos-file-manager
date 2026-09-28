@@ -32,12 +32,12 @@ pub fn show(parent: &gtk::ApplicationWindow, item: &ItemObject) {
 
     notebook.append_page(
         &build_permissions_tab(item),
-        Some(&gtk::Label::new(Some("Permissions"))),
+        Some(&gtk::Label::new(Some(&tr("Permissions")))),
     );
 
     notebook.append_page(
         &build_open_with_tab(&window, item),
-        Some(&gtk::Label::new(Some("Open With"))),
+        Some(&gtk::Label::new(Some(&tr("Open With")))),
     );
 
     {
@@ -85,7 +85,11 @@ pub fn show_selection(parent: &gtk::ApplicationWindow, items: &[ItemObject]) {
     summary.set_halign(gtk::Align::Start);
     summary.add_css_class("heading");
 
-    let total_label = gtk::Label::new(Some("Total size: calculating\u{2026}"));
+    let total_label = gtk::Label::new(Some(&format!(
+        "{}: {}\u{2026}",
+        tr("Total size"),
+        tr("Calculating")
+    )));
     total_label.set_halign(gtk::Align::Start);
 
     let list = gtk::ListBox::new();
@@ -116,7 +120,7 @@ pub fn show_selection(parent: &gtk::ApplicationWindow, items: &[ItemObject]) {
 
     glib::MainContext::default().spawn_local(async move {
         if let Ok(total) = receiver.recv().await {
-            total_label.set_label(&format!("Total size: {}", describe_size(total)));
+            total_label.set_label(&format!("{}: {}", tr("Total size"), describe_size(total)));
         }
     });
 
@@ -173,13 +177,15 @@ fn build_general_tab(item: &ItemObject, cancel: &Arc<AtomicBool>) -> gtk::Widget
     let is_folder = item.is_dir();
 
     let size_text = if is_folder {
-        "Calculating\u{2026}".to_string()
+        format!("{}\u{2026}", tr("Calculating"))
     } else {
         item.size_str()
     };
 
     let details = extra_details(&path);
 
+    // Keys stay English (matched against `label_text == "Size"` below);
+    // only the built `Label` text is translated, via `tr(label_text)`.
     let mut rows: Vec<(&str, String)> = vec![
         ("Name", item.name()),
         ("Type", item.mime_type()),
@@ -199,9 +205,9 @@ fn build_general_tab(item: &ItemObject, cancel: &Arc<AtomicBool>) -> gtk::Widget
         (
             "Symlink",
             if item.is_symlink() {
-                "Yes".into()
+                tr("Yes")
             } else {
-                "No".into()
+                tr("No")
             },
         ),
     ];
@@ -214,7 +220,7 @@ fn build_general_tab(item: &ItemObject, cancel: &Arc<AtomicBool>) -> gtk::Widget
 
     let mut row = 1;
     for (label_text, value) in rows {
-        let l = gtk::Label::new(Some(label_text));
+        let l = gtk::Label::new(Some(&tr(label_text)));
         l.set_halign(gtk::Align::Start);
         l.add_css_class("heading");
 
@@ -320,7 +326,7 @@ fn build_permissions_tab(item: &ItemObject) -> gtk::Widget {
 
     // Header row
     for (col, title) in ["Owner", "Group", "Others"].iter().enumerate() {
-        let l = gtk::Label::new(Some(title));
+        let l = gtk::Label::new(Some(&tr(title)));
         l.add_css_class("heading");
         grid.attach(&l, col as i32 + 1, 0, 1, 1);
     }
@@ -349,7 +355,7 @@ fn build_permissions_tab(item: &ItemObject) -> gtk::Widget {
     ];
 
     for (row_idx, (label_text, o, g, ot)) in rows.iter().enumerate() {
-        let l = gtk::Label::new(Some(label_text));
+        let l = gtk::Label::new(Some(&tr(label_text)));
         l.set_halign(gtk::Align::Start);
         grid.attach(&l, 0, row_idx as i32 + 1, 1, 1);
         grid.attach(*o, 1, row_idx as i32 + 1, 1, 1);
@@ -359,7 +365,7 @@ fn build_permissions_tab(item: &ItemObject) -> gtk::Widget {
 
     vbox.append(&grid);
 
-    let apply_btn = gtk::Button::with_label("Apply");
+    let apply_btn = gtk::Button::with_label(&tr("Apply"));
     apply_btn.set_halign(gtk::Align::Start);
     let status = gtk::Label::new(None);
     status.set_halign(gtk::Align::Start);
@@ -409,7 +415,7 @@ fn build_permissions_tab(item: &ItemObject) -> gtk::Widget {
             }
 
             match std::fs::set_permissions(&path, std::fs::Permissions::from_mode(new_mode)) {
-                Ok(()) => status.set_label("Permissions updated."),
+                Ok(()) => status.set_label(&tr("Permissions updated.")),
                 Err(err) => status.set_label(&format!("Failed: {err}")),
             }
         });
@@ -453,7 +459,7 @@ fn build_open_with_tab(window: &gtk::Window, item: &ItemObject) -> gtk::Widget {
     scrolled.set_child(Some(&list));
     scrolled.set_vexpand(true);
 
-    let set_btn = gtk::Button::with_label("Set as Default");
+    let set_btn = gtk::Button::with_label(&tr("Set as Default"));
     set_btn.set_halign(gtk::Align::Start);
     let status = gtk::Label::new(None);
     status.set_halign(gtk::Align::Start);
@@ -467,7 +473,7 @@ fn build_open_with_tab(window: &gtk::Window, item: &ItemObject) -> gtk::Widget {
 
         set_btn.connect_clicked(move |_| {
             let Some(row) = list.selected_row() else {
-                status.set_label("Select an application first.");
+                status.set_label(&tr("Select an application first."));
                 return;
             };
 
@@ -477,7 +483,7 @@ fn build_open_with_tab(window: &gtk::Window, item: &ItemObject) -> gtk::Widget {
             }
 
             match crate::mime::applications::set_default_app(&apps[index as usize], &mime) {
-                Ok(()) => status.set_label("Default application updated."),
+                Ok(()) => status.set_label(&tr("Default application updated.")),
                 Err(err) => {
                     crate::ui::dialogs::show_error(&window, &format!("Failed: {err}"));
                 }

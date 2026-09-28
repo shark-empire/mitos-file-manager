@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use crate::operations::{self, batch_rename};
 use crate::ui::dialogs;
 use gtk::prelude::*;
@@ -22,11 +23,7 @@ struct PlannedRename {
 /// selection came from a recursive search and spans several folders: joining
 /// every new name onto the first item's folder would quietly move files
 /// between directories.
-fn plan_renames(
-    items: &[(String, PathBuf)],
-    pattern: &str,
-    start_number: u64,
-) -> Vec<PlannedRename> {
+fn plan_renames(items: &[(String, PathBuf)], pattern: &str, start_number: u64) -> Vec<PlannedRename> {
     items
         .iter()
         .enumerate()
@@ -50,7 +47,7 @@ where
     F: Fn(Vec<(PathBuf, PathBuf)>) + 'static,
 {
     let window = gtk::Window::builder()
-        .title("Batch Rename")
+        .title(tr("Batch Rename"))
         .transient_for(parent)
         .default_width(560)
         .default_height(520)
@@ -66,7 +63,7 @@ where
     // Pattern row
     let pattern_box = GtkBox::new(Orientation::Horizontal, 8);
 
-    let pattern_label = Label::new(Some("Pattern:"));
+    let pattern_label = Label::new(Some(&tr("Pattern:")));
     let pattern_entry = Entry::new();
     // `{ext}` matters: without it every file would lose its extension the
     // moment Apply is pressed.
@@ -79,17 +76,20 @@ where
     // Start number row
     let number_box = GtkBox::new(Orientation::Horizontal, 8);
 
-    let number_label = Label::new(Some("Start at:"));
+    let number_label = Label::new(Some(&tr("Start at:")));
     let number_spin = SpinButton::with_range(0.0, 999999.0, 1.0);
     number_spin.set_value(1.0);
 
     number_box.append(&number_label);
     number_box.append(&number_spin);
 
-    // Help text
-    let help_label = Label::new(Some(
-        "Tokens:  {name}  {ext}  {n}  {000}  {parent}  {date}  {time}",
-    ));
+    // Help text. The token names ({name}, {ext}, ...) are literal syntax the
+    // user types -- kept in every language exactly as `compute_new_name`
+    // parses them -- only the "Tokens:" label is translated.
+    let help_label = Label::new(Some(&format!(
+        "{}:  {{name}}  {{ext}}  {{n}}  {{000}}  {{parent}}  {{date}}  {{time}}",
+        tr("Tokens")
+    )));
     help_label.set_halign(gtk::Align::Start);
     help_label.set_wrap(true);
 
@@ -109,8 +109,8 @@ where
     let button_box = GtkBox::new(Orientation::Horizontal, 8);
     button_box.set_halign(gtk::Align::End);
 
-    let cancel_btn = Button::with_label("Cancel");
-    let apply_btn = Button::with_label("Apply Rename");
+    let cancel_btn = Button::with_label(&tr("Cancel"));
+    let apply_btn = Button::with_label(&tr("Apply Rename"));
 
     apply_btn.add_css_class("suggested-action");
 

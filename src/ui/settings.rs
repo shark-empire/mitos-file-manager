@@ -1,4 +1,5 @@
 use crate::config::settings;
+use crate::i18n::{tr, Lang};
 use crate::ui::theme::ThemeMode;
 use gtk::prelude::*;
 use gtk::{ApplicationWindow, Box as GtkBox, Button, Grid, Label, Orientation, SpinButton, Switch};
@@ -6,7 +7,7 @@ use std::rc::Rc;
 
 pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     let window = gtk::Window::builder()
-        .title("MITOS Files Settings")
+        .title(tr("MITOS Files Settings"))
         .transient_for(parent)
         .default_width(460)
         .build();
@@ -25,7 +26,7 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     let current = settings::current();
 
     // Show hidden files
-    let hidden_label = Label::new(Some("Show hidden files by default"));
+    let hidden_label = Label::new(Some(&tr("Show hidden files by default")));
     hidden_label.set_halign(gtk::Align::Start);
     hidden_label.set_hexpand(true);
 
@@ -37,7 +38,7 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     grid.attach(&hidden_switch, 1, 0, 1, 1);
 
     // Thumbnails enabled
-    let thumbnails_label = Label::new(Some("Enable thumbnails"));
+    let thumbnails_label = Label::new(Some(&tr("Enable thumbnails")));
     thumbnails_label.set_halign(gtk::Align::Start);
     thumbnails_label.set_hexpand(true);
 
@@ -49,7 +50,7 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     grid.attach(&thumbnails_switch, 1, 1, 1, 1);
 
     // Max thumbnail size
-    let max_label = Label::new(Some("Max thumbnail image size (MB)"));
+    let max_label = Label::new(Some(&tr("Max thumbnail image size (MB)")));
     max_label.set_halign(gtk::Align::Start);
     max_label.set_hexpand(true);
 
@@ -61,7 +62,7 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     grid.attach(&max_spin, 1, 2, 1, 1);
 
     // Confirm trash
-    let confirm_label = Label::new(Some("Confirm before emptying trash"));
+    let confirm_label = Label::new(Some(&tr("Confirm before emptying trash")));
     confirm_label.set_halign(gtk::Align::Start);
     confirm_label.set_hexpand(true);
 
@@ -73,11 +74,11 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     grid.attach(&confirm_switch, 1, 3, 1, 1);
 
     // Theme mode
-    let theme_label = Label::new(Some("Theme"));
+    let theme_label = Label::new(Some(&tr("Theme")));
     theme_label.set_halign(gtk::Align::Start);
     theme_label.set_hexpand(true);
 
-    let theme_dropdown = gtk::DropDown::from_strings(&["Light", "Dark"]);
+    let theme_dropdown = gtk::DropDown::from_strings(&[&tr("Light"), &tr("Dark")]);
 
     let current_theme = if current.theme_mode == "dark" { 1 } else { 0 };
     theme_dropdown.set_selected(current_theme);
@@ -87,11 +88,11 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     grid.attach(&theme_dropdown, 1, 4, 1, 1);
 
     // Default view (grid vs list)
-    let view_label = Label::new(Some("Default view"));
+    let view_label = Label::new(Some(&tr("Default view")));
     view_label.set_halign(gtk::Align::Start);
     view_label.set_hexpand(true);
 
-    let view_dropdown = gtk::DropDown::from_strings(&["Grid", "List"]);
+    let view_dropdown = gtk::DropDown::from_strings(&[&tr("Grid"), &tr("List")]);
 
     let current_view = if current.default_view == "list" { 1 } else { 0 };
     view_dropdown.set_selected(current_view);
@@ -100,13 +101,43 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     grid.attach(&view_label, 0, 5, 1, 1);
     grid.attach(&view_dropdown, 1, 5, 1, 1);
 
+    // Language. Each entry is shown in its own language (so someone
+    // looking for their language can find it without already being able
+    // to read the current one), backed by `Lang::all()` in the same order.
+    let language_label = Label::new(Some(&tr("Language")));
+    language_label.set_halign(gtk::Align::Start);
+    language_label.set_hexpand(true);
+
+    let language_names: Vec<&str> = Lang::all().iter().map(|lang| lang.native_name()).collect();
+    let language_dropdown = gtk::DropDown::from_strings(&language_names);
+
+    let current_lang = Lang::from_code(&current.language).unwrap_or_else(crate::i18n::current);
+    let current_lang_index = Lang::all()
+        .iter()
+        .position(|&lang| lang == current_lang)
+        .unwrap_or(0);
+    language_dropdown.set_selected(current_lang_index as u32);
+    language_dropdown.set_halign(gtk::Align::End);
+
+    grid.attach(&language_label, 0, 6, 1, 1);
+    grid.attach(&language_dropdown, 1, 6, 1, 1);
+
+    let language_note = Label::new(Some(&tr(
+        "Some parts of the window need a restart to fully switch language.",
+    )));
+    language_note.set_halign(gtk::Align::Start);
+    language_note.set_wrap(true);
+    language_note.add_css_class("dim-label");
+
+    grid.attach(&language_note, 0, 7, 2, 1);
+
     // Recommended default apps (mpv/Celluloid for video+audio, GNOME Text
     // Editor for text) -- a bulk alternative to setting each one by hand
     // through a file's Properties > Open With tab.
     let defaults_section = GtkBox::new(Orientation::Vertical, 6);
     defaults_section.set_margin_top(4);
 
-    let defaults_label = Label::new(Some("Default apps"));
+    let defaults_label = Label::new(Some(&tr("Default apps")));
     defaults_label.set_halign(gtk::Align::Start);
     defaults_label.add_css_class("heading");
 
@@ -118,7 +149,7 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     defaults_desc.set_wrap(true);
     defaults_desc.add_css_class("dim-label");
 
-    let defaults_btn = Button::with_label("Set Recommended Defaults");
+    let defaults_btn = Button::with_label(&tr("Set Recommended Defaults"));
     defaults_btn.set_halign(gtk::Align::Start);
 
     let defaults_status = Label::new(None);
@@ -161,8 +192,8 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
     // Buttons
     let button_box = GtkBox::new(Orientation::Horizontal, 8);
 
-    let cancel_btn = Button::with_label("Cancel");
-    let apply_btn = Button::with_label("Apply");
+    let cancel_btn = Button::with_label(&tr("Cancel"));
+    let apply_btn = Button::with_label(&tr("Apply"));
 
     apply_btn.add_css_class("suggested-action");
 
@@ -201,6 +232,17 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
                 "grid"
             };
 
+            let language = Lang::all()
+                .get(language_dropdown.selected() as usize)
+                .copied()
+                .unwrap_or_default();
+
+            // Take effect immediately for anything built from here on
+            // (new dialogs, menus, the sidebar); already-built toolbar
+            // chrome keeps its current language until the app restarts
+            // (see the note under the dropdown).
+            crate::i18n::set_current(language);
+
             settings::apply_and_save(
                 hidden_switch.is_active(),
                 thumbnails_switch.is_active(),
@@ -208,6 +250,7 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
                 confirm_switch.is_active(),
                 theme,
                 view,
+                language.code(),
             );
 
             apply.as_ref()();

@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
+use crate::i18n::tr;
 use crate::mime::thumbnail;
 use crate::operations::archive;
 use crate::util::{get_obj_data, set_obj_data};
@@ -212,11 +213,7 @@ pub fn update(container: &GtkBox, item: Option<&crate::ui::item_object::ItemObje
 /// Show an image scaled down to `PREVIEW_IMAGE_SIZE`. Returns false (so the
 /// caller falls back to the file-type icon) for files over the "max
 /// thumbnail size" setting or that no installed loader can read.
-fn show_image(
-    widgets: &PreviewWidgets,
-    item: &crate::ui::item_object::ItemObject,
-    path: &Path,
-) -> bool {
+fn show_image(widgets: &PreviewWidgets, item: &crate::ui::item_object::ItemObject, path: &Path) -> bool {
     let size = item.size();
 
     if size == 0 || size > crate::config::settings::thumbnail_max_bytes() {
@@ -246,7 +243,7 @@ fn show_image(
 /// "12 items" and the first few names, for a folder.
 fn describe_folder(path: &Path) -> String {
     let Ok(entries) = fs::read_dir(path) else {
-        return "This folder can't be read.".to_string();
+        return tr("This folder can't be read.");
     };
 
     let mut names: Vec<String> = Vec::new();
@@ -267,7 +264,7 @@ fn describe_folder(path: &Path) -> String {
     names.sort_by_key(|name| name.to_lowercase());
 
     let header = match count {
-        0 => "Empty folder".to_string(),
+        0 => tr("Empty folder"),
         1 => "1 item".to_string(),
         n if n >= FOLDER_COUNT_CAP => format!("{n}+ items"),
         n => format!("{n} items"),
@@ -290,11 +287,7 @@ fn describe_folder(path: &Path) -> String {
 fn describe_archive(path: &Path) -> Option<String> {
     let listing = archive::list_entries(path, PREVIEW_LIST_LIMIT).ok()?;
 
-    let mut text = format!(
-        "{} entries shown\n\n{}",
-        listing.entries.len(),
-        listing.entries.join("\n")
-    );
+    let mut text = format!("{} entries shown\n\n{}", listing.entries.len(), listing.entries.join("\n"));
 
     if listing.truncated {
         text.push_str("\n\u{2026} and more");
@@ -363,10 +356,7 @@ mod tests {
         fs::create_dir(&empty).unwrap();
         assert_eq!(describe_folder(&empty), "Empty folder");
 
-        assert_eq!(
-            describe_folder(&dir.join("nope")),
-            "This folder can't be read."
-        );
+        assert_eq!(describe_folder(&dir.join("nope")), "This folder can't be read.");
 
         let _ = fs::remove_dir_all(&dir);
     }

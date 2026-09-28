@@ -2,7 +2,9 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 
+use crate::filesystem::access;
 use crate::filesystem::directory::Item;
+use crate::i18n::tr;
 use crate::mime::thumbnail;
 use crate::ui::item_object::ItemObject;
 use crate::util::{get_obj_data, set_obj_data, take_obj_data};
@@ -63,6 +65,19 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
         stack.add_child(&picture);
         stack.set_visible_child(&icon);
 
+        // A small badge over the icon/thumbnail for items you can't write
+        // to -- toggled in bind, below.
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&stack));
+
+        let lock_badge = gtk::Image::from_icon_name("changes-prevent-symbolic");
+        lock_badge.set_pixel_size(14);
+        lock_badge.set_halign(gtk::Align::End);
+        lock_badge.set_valign(gtk::Align::End);
+        lock_badge.set_visible(false);
+        lock_badge.add_css_class("dim-label");
+        overlay.add_overlay(&lock_badge);
+
         let label = gtk::Label::new(None);
         label.set_wrap(true);
         label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
@@ -71,7 +86,7 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
         label.set_halign(gtk::Align::Center);
         label.set_max_width_chars(12);
 
-        container.append(&stack);
+        container.append(&overlay);
         container.append(&label);
 
         item.set_child(Some(&container));
@@ -80,6 +95,7 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
         set_obj_data(item, "icon", icon);
         set_obj_data(item, "picture", picture);
         set_obj_data(item, "label", label);
+        set_obj_data(item, "lock-badge", lock_badge);
     });
 
     factory.connect_bind(move |_, item| {
@@ -105,6 +121,19 @@ pub fn create_grid_view(selection: &gtk::MultiSelection) -> gtk::GridView {
         label.set_label(&item_obj.name());
 
         apply_thumbnail(&stack, &icon, &picture, &item_obj.thumbnail_path());
+
+        if let Some(lock_badge) = get_obj_data::<_, gtk::Image>(item, "lock-badge") {
+            // One `access(2)` call, only for rows actually on screen
+            // (`GridView` virtualizes -- bind only fires for visible rows).
+            let locked = !access::can_write(&item_obj.get_path());
+            lock_badge.set_visible(locked);
+
+            if locked {
+                lock_badge.set_tooltip_text(Some(&tr(
+                    "Read-only \u{2014} you don't have permission to change this",
+                )));
+            }
+        }
 
         // Video thumbnails aren't ready at bind time (see below), so stay
         // in sync if `thumbnail-path` changes later. `GridView` recycles

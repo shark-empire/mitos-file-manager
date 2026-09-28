@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use crate::navigation::bookmarks::Bookmark;
 use crate::navigation::locations;
 use crate::ui::dialogs;
@@ -12,7 +13,7 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
     }
 
     // --- 1. PLACES ---
-    add_header(list, "Places");
+    add_header(list, &tr("Places"));
 
     let home = locations::home_dir();
 
@@ -28,12 +29,15 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
             continue;
         }
 
-        add_row(list, &name, place_icon(&name), path, None, window);
+        // Only the row's *display text* is translated -- `name` itself
+        // (used above for the "always shown" check and by `place_icon`)
+        // stays the English key `default_places()` returns.
+        add_row(list, &tr(&name), place_icon(&name), path, None, window);
     }
 
     add_row(
         list,
-        "Trash",
+        &tr("Trash"),
         "user-trash-symbolic",
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("/.local/share"))
@@ -46,7 +50,7 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
     let recents = crate::navigation::recent::recent_files(10);
 
     if !recents.is_empty() {
-        add_header(list, "Recent");
+        add_header(list, &tr("Recent"));
 
         for path in recents {
             let name = path
@@ -67,7 +71,7 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
 
     // --- 2. BOOKMARKS ---
     if !bookmarks.is_empty() {
-        add_header(list, "Bookmarks");
+        add_header(list, &tr("Bookmarks"));
         for bm in bookmarks {
             add_row(
                 list,
@@ -81,7 +85,7 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
     }
 
     // --- 3. DEVICES & VOLUMES ---
-    add_header(list, "Devices");
+    add_header(list, &tr("Devices"));
 
     let (network, local): (Vec<gio::Mount>, Vec<gio::Mount>) =
         external_mounts().into_iter().partition(is_network_mount);
@@ -97,7 +101,7 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
     }
 
     // --- 4. NETWORK ---
-    add_header(list, "Network");
+    add_header(list, &tr("Network"));
 
     for mount in &network {
         add_mount_row(list, mount, window);
@@ -116,7 +120,7 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
         row_box.set_margin_end(6);
 
         let icon = Image::from_icon_name("network-server-symbolic");
-        let label = Label::new(Some("Connect to Server…"));
+        let label = Label::new(Some(&tr("Connect to Server\u{2026}")));
         label.set_hexpand(true);
         label.set_halign(gtk::Align::Start);
 
@@ -124,6 +128,31 @@ pub fn build(list: &ListBox, bookmarks: &[Bookmark], window: &gtk::ApplicationWi
         row_box.append(&label);
         row.set_child(Some(&row_box));
         row.set_widget_name("action:connect-to-server");
+        list.append(&row);
+    }
+
+    // --- "Browse Network..." action row: discovers nearby shares (SMB
+    // workgroups, DNS-SD/UPnP announcements, ...) via GIO's `network:///`,
+    // rather than requiring the address be typed in by hand. What (if
+    // anything) turns up depends on the GVfs backends installed -- see
+    // `navigation::network`.
+    {
+        let row = ListBoxRow::new();
+        let row_box = GtkBox::new(Orientation::Horizontal, 6);
+        row_box.set_margin_top(4);
+        row_box.set_margin_bottom(4);
+        row_box.set_margin_start(6);
+        row_box.set_margin_end(6);
+
+        let icon = Image::from_icon_name("network-workgroup-symbolic");
+        let label = Label::new(Some(&tr("Browse Network\u{2026}")));
+        label.set_hexpand(true);
+        label.set_halign(gtk::Align::Start);
+
+        row_box.append(&icon);
+        row_box.append(&label);
+        row.set_child(Some(&row_box));
+        row.set_widget_name("action:browse-network");
         list.append(&row);
     }
 }
@@ -168,7 +197,7 @@ fn add_mount_row(list: &ListBox, mount: &gio::Mount, window: &gtk::ApplicationWi
         let eject_icon = Image::from_icon_name("media-eject-symbolic");
         eject_btn.set_child(Some(&eject_icon));
         eject_btn.set_has_frame(false);
-        eject_btn.set_tooltip_text(Some(if ejects { "Eject" } else { "Unmount" }));
+        eject_btn.set_tooltip_text(Some(&if ejects { tr("Eject") } else { tr("Unmount") }));
         eject_btn.set_valign(gtk::Align::Center);
 
         let window_clone = window.clone();
@@ -181,11 +210,7 @@ fn add_mount_row(list: &ListBox, mount: &gio::Mount, window: &gtk::ApplicationWi
                 if let Err(err) = result {
                     dialogs::show_error(
                         &window_for_result,
-                        &format!(
-                            "Failed to {}: {}",
-                            if ejects { "eject" } else { "unmount" },
-                            err
-                        ),
+                        &format!("Failed to {}: {}", if ejects { "eject" } else { "unmount" }, err),
                     );
                 }
             };
@@ -226,7 +251,7 @@ fn add_volume_row(list: &ListBox, volume: &gio::Volume) {
     row_box.set_margin_end(6);
 
     let icon = Image::from_icon_name("drive-removable-media-symbolic");
-    let label = Label::new(Some(&format!("{} (not mounted)", volume.name())));
+    let label = Label::new(Some(&format!("{} ({})", volume.name(), tr("not mounted"))));
     label.set_hexpand(true);
     label.set_halign(gtk::Align::Start);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -234,7 +259,7 @@ fn add_volume_row(list: &ListBox, volume: &gio::Volume) {
     row_box.append(&icon);
     row_box.append(&label);
     row.set_child(Some(&row_box));
-    row.set_tooltip_text(Some("Click to mount"));
+    row.set_tooltip_text(Some(&tr("Click to mount")));
     // The click handler finds the volume again from this id.
     row.set_widget_name(&format!("volume:{}", volume_id(volume)));
     list.append(&row);

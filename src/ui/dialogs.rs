@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use gtk::prelude::*;
 use gtk::{ApplicationWindow, Entry, Label};
 
@@ -123,7 +124,7 @@ pub fn confirm_then<F>(
     label.set_halign(gtk::Align::Start);
     dialog.content.append(&label);
 
-    let cancel_btn = dialog_button(&dialog.button_row, "Cancel");
+    let cancel_btn = dialog_button(&dialog.button_row, &tr("Cancel"));
     let accept_btn = dialog_button(&dialog.button_row, accept_label);
     accept_btn.add_css_class(if destructive {
         "destructive-action"
@@ -154,13 +155,13 @@ pub fn confirm_then<F>(
 }
 
 pub fn show_error(parent: &impl IsA<gtk::Window>, message: &str) {
-    let dialog = build_dialog(parent, "Error");
+    let dialog = build_dialog(parent, &tr("Error"));
 
     let label = Label::new(Some(message));
     label.set_wrap(true);
     dialog.content.append(&label);
 
-    let ok_btn = dialog_button(&dialog.button_row, "OK");
+    let ok_btn = dialog_button(&dialog.button_row, &tr("OK"));
 
     let window = dialog.window.clone();
     ok_btn.connect_clicked(move |_| window.close());
@@ -175,7 +176,7 @@ pub fn show_info(parent: &ApplicationWindow, title: &str, message: &str) {
     label.set_wrap(true);
     dialog.content.append(&label);
 
-    let ok_btn = dialog_button(&dialog.button_row, "OK");
+    let ok_btn = dialog_button(&dialog.button_row, &tr("OK"));
 
     let window = dialog.window.clone();
     ok_btn.connect_clicked(move |_| window.close());
@@ -192,7 +193,7 @@ pub fn choose_conflict_policy(
     use std::cell::Cell;
     use std::rc::Rc;
 
-    let dialog = build_dialog(parent, "File Conflict");
+    let dialog = build_dialog(parent, &tr("File Conflict"));
 
     let noun = if conflict_count == 1 { "file" } else { "files" };
 
@@ -203,10 +204,10 @@ pub fn choose_conflict_policy(
     label.set_wrap(true);
     dialog.content.append(&label);
 
-    let cancel_btn = dialog_button(&dialog.button_row, "Cancel");
-    let skip_btn = dialog_button(&dialog.button_row, "Skip Existing");
-    let replace_btn = dialog_button(&dialog.button_row, "Replace");
-    let keep_both_btn = dialog_button(&dialog.button_row, "Keep Both");
+    let cancel_btn = dialog_button(&dialog.button_row, &tr("Cancel"));
+    let skip_btn = dialog_button(&dialog.button_row, &tr("Skip Existing"));
+    let replace_btn = dialog_button(&dialog.button_row, &tr("Replace"));
+    let keep_both_btn = dialog_button(&dialog.button_row, &tr("Keep Both"));
     keep_both_btn.add_css_class("suggested-action");
 
     let loop_ = glib::MainLoop::new(None, false);
@@ -277,11 +278,11 @@ where
 
     let on_connected = Rc::new(on_connected);
 
-    let dialog = build_dialog(parent, "Connect to Server");
+    let dialog = build_dialog(parent, &tr("Connect to Server"));
 
-    let label = Label::new(Some(
+    let label = Label::new(Some(&tr(
         "Enter a network address:\nsmb://server/share · sftp://user@host/path · ftp://host/path",
-    ));
+    )));
     label.set_wrap(true);
     label.set_halign(gtk::Align::Start);
 
@@ -296,7 +297,7 @@ where
     let recent_servers = crate::navigation::servers::load();
 
     if !recent_servers.is_empty() {
-        let recent_label = Label::new(Some("Recent servers"));
+        let recent_label = Label::new(Some(&tr("Recent servers")));
         recent_label.set_halign(gtk::Align::Start);
         recent_label.add_css_class("dim-label");
         dialog.content.append(&recent_label);
@@ -318,8 +319,8 @@ where
         }
     }
 
-    let cancel_btn = dialog_button(&dialog.button_row, "Cancel");
-    let connect_btn = dialog_button(&dialog.button_row, "Connect");
+    let cancel_btn = dialog_button(&dialog.button_row, &tr("Cancel"));
+    let connect_btn = dialog_button(&dialog.button_row, &tr("Connect"));
     connect_btn.add_css_class("suggested-action");
     dialog.window.set_default_widget(Some(&connect_btn));
 
@@ -372,7 +373,7 @@ where
                     } else {
                         show_error(
                             &parent_for_error,
-                            "Connected, but MITOS Files couldn't resolve a local path for it.",
+                            &tr("Connected, but MITOS Files couldn't resolve a local path for it."),
                         );
                     }
                 },

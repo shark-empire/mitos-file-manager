@@ -1,14 +1,20 @@
 use crate::filesystem::metadata;
+use crate::i18n::tr;
 use crate::operations::jobs::{JobHandle, JobMessage};
 use async_channel::Receiver;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{ApplicationWindow, Box as GtkBox, Button, Label, Orientation, ProgressBar};
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+/// `on_done` gets the job's result, plus every `(source, destination)` a
+/// paste job actually wrote (empty for every other job kind) -- so a
+/// caller building an undo entry doesn't need its own copy of that
+/// bookkeeping.
 pub fn show_progress_dialog<F>(
     parent: &ApplicationWindow,
     title: &str,
@@ -16,7 +22,7 @@ pub fn show_progress_dialog<F>(
     receiver: Receiver<JobMessage>,
     on_done: F,
 ) where
-    F: Fn(Result<usize, String>) + 'static,
+    F: Fn(Result<usize, String>, Vec<(PathBuf, PathBuf)>) + 'static,
 {
     let window = gtk::Window::builder()
         .title(title)
@@ -32,7 +38,7 @@ pub fn show_progress_dialog<F>(
     vbox.set_margin_start(12);
     vbox.set_margin_end(12);
 
-    let label = Label::new(Some("Preparing..."));
+    let label = Label::new(Some(&tr("Preparing...")));
     label.set_halign(gtk::Align::Start);
 
     let bar = ProgressBar::new();
@@ -40,8 +46,8 @@ pub fn show_progress_dialog<F>(
 
     let controls = GtkBox::new(Orientation::Horizontal, 8);
 
-    let pause_btn = Button::with_label("Pause");
-    let cancel_btn = Button::with_label("Cancel");
+    let pause_btn = Button::with_label(&tr("Pause"));
+    let cancel_btn = Button::with_label(&tr("Cancel"));
 
     controls.append(&pause_btn);
     controls.append(&cancel_btn);
@@ -62,9 +68,9 @@ pub fn show_progress_dialog<F>(
             pause.store(paused, Ordering::Relaxed);
 
             if paused {
-                btn.set_label("Resume");
+                btn.set_label(&tr("Resume"));
             } else {
-                btn.set_label("Pause");
+                btn.set_label(&tr("Pause"));
             }
         });
     }
@@ -90,6 +96,7 @@ pub fn show_progress_dialog<F>(
 
     let start = Instant::now();
     let win_for_task = window.clone();
+    let mut transferred: Vec<(PathBuf, PathBuf)> = Vec::new();
 
     glib::MainContext::default().spawn_local(async move {
         while let Ok(message) = receiver.recv().await {
@@ -166,9 +173,13 @@ pub fn show_progress_dialog<F>(
                     bar.set_text(Some(&detail));
                 }
 
+                JobMessage::Transferred { source, destination } => {
+                    transferred.push((source, destination));
+                }
+
                 JobMessage::Finished { result } => {
                     win_for_task.close();
-                    on_done(result);
+                    on_done(result, transferred);
                     break;
                 }
             }

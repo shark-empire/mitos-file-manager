@@ -1,4 +1,5 @@
 use crate::filesystem::trash;
+use crate::i18n::tr;
 use crate::ui::dialogs;
 use crate::ui::sidebar;
 use gtk::glib;
@@ -27,7 +28,7 @@ fn extra_trash_roots() -> Vec<(String, PathBuf)> {
 
 pub fn show(parent: &ApplicationWindow, refresh_main: Rc<dyn Fn()>) {
     let window = gtk::Window::builder()
-        .title("Trash")
+        .title(tr("Trash"))
         .transient_for(parent)
         .default_width(760)
         .default_height(480)
@@ -42,8 +43,8 @@ pub fn show(parent: &ApplicationWindow, refresh_main: Rc<dyn Fn()>) {
 
     let toolbar = GtkBox::new(Orientation::Horizontal, 6);
 
-    let refresh_btn = Button::with_label("Refresh");
-    let empty_btn = Button::with_label("Empty Trash");
+    let refresh_btn = Button::with_label(&tr("Refresh"));
+    let empty_btn = Button::with_label(&tr("Empty Trash"));
 
     toolbar.append(&refresh_btn);
     toolbar.append(&empty_btn);
@@ -85,9 +86,11 @@ pub fn show(parent: &ApplicationWindow, refresh_main: Rc<dyn Fn()>) {
             if crate::config::settings::confirm_trash_enabled()
                 && !confirm_action(
                     &window,
-                    "Empty Trash",
-                    "All items in the trash -- including anything trashed from other drives \
-                     or network shares -- will be permanently deleted.\n\nContinue?",
+                    &tr("Empty Trash"),
+                    &tr(
+                        "All items in the trash -- including anything trashed from other drives \
+                         or network shares -- will be permanently deleted.\n\nContinue?",
+                    ),
                 )
             {
                 return;
@@ -114,7 +117,7 @@ fn populate(list: &ListBox, parent: &gtk::Window, refresh_main: Rc<dyn Fn()>) {
 
     if items.is_empty() {
         let row = ListBoxRow::new();
-        let label = Label::new(Some("Trash is empty"));
+        let label = Label::new(Some(&tr("Trash is empty")));
 
         row.set_child(Some(&label));
         list.append(&row);
@@ -133,14 +136,15 @@ fn populate(list: &ListBox, parent: &gtk::Window, refresh_main: Rc<dyn Fn()>) {
         row_box.set_margin_end(6);
 
         let mut label_text = format!(
-            "{}\nOriginal location: {}  ·  {}",
+            "{}\n{}: {}  ·  {}",
             item.trash_name,
+            tr("Original location"),
             item.original_path.display(),
             item.location_label,
         );
 
         if let Some(deleted) = &item.deletion_date {
-            label_text.push_str(&format!("\nDeleted: {deleted}"));
+            label_text.push_str(&format!("\n{}: {deleted}", tr("Deleted")));
         }
 
         let label = Label::new(Some(&label_text));
@@ -148,8 +152,8 @@ fn populate(list: &ListBox, parent: &gtk::Window, refresh_main: Rc<dyn Fn()>) {
         label.set_halign(gtk::Align::Start);
         label.set_hexpand(true);
 
-        let restore_btn = Button::with_label("Restore");
-        let delete_btn = Button::with_label("Delete Forever");
+        let restore_btn = Button::with_label(&tr("Restore"));
+        let delete_btn = Button::with_label(&tr("Delete Forever"));
         delete_btn.add_css_class("destructive-action");
 
         {
@@ -179,8 +183,11 @@ fn populate(list: &ListBox, parent: &gtk::Window, refresh_main: Rc<dyn Fn()>) {
                 if crate::config::settings::confirm_trash_enabled()
                     && !confirm_action(
                         &parent,
-                        "Delete Forever",
-                        &format!("\"{item_name}\" will be permanently deleted.\n\nContinue?"),
+                        &tr("Delete Forever"),
+                        &format!(
+                            "\"{item_name}\" {}",
+                            tr("will be permanently deleted.\n\nContinue?")
+                        ),
                     )
                 {
                     return;
@@ -213,7 +220,7 @@ fn confirm_action(parent: &gtk::Window, title: &str, message: &str) -> bool {
     label.set_wrap(true);
     dialog.content.append(&label);
 
-    let cancel_btn = dialogs::dialog_button(&dialog.button_row, "Cancel");
+    let cancel_btn = dialogs::dialog_button(&dialog.button_row, &tr("Cancel"));
     let accept_btn = dialogs::dialog_button(&dialog.button_row, title);
     accept_btn.add_css_class("destructive-action");
 
