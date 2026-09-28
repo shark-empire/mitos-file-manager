@@ -24,6 +24,12 @@ pub struct Settings {
     pub confirm_trash: bool,
     pub theme_mode: String,
     pub default_view: String,
+    /// UI language, as an `i18n::Lang` code ("fr", "es", ...). Empty means
+    /// "not chosen yet" -- `apply_globals` then falls back to the system
+    /// locale (`i18n::detect_system_language`). Deliberately not part of
+    /// `SharedConfig`: unlike the theme, the language is this app's own UI
+    /// choice, not a desktop-wide one mitos-gui also needs to know.
+    pub language: String,
 }
 
 impl Default for Settings {
@@ -35,6 +41,7 @@ impl Default for Settings {
             confirm_trash: true,
             theme_mode: "light".to_string(),
             default_view: "grid".to_string(),
+            language: String::new(),
         }
     }
 }
@@ -52,6 +59,7 @@ pub fn load() -> Settings {
         confirm_trash: settings.confirm_trash,
         theme_mode: shared.theme_mode,
         default_view: settings.default_view,
+        language: settings.language,
     };
 
     apply_globals(&merged);
@@ -66,9 +74,11 @@ pub fn current() -> Settings {
         confirm_trash: confirm_trash_enabled(),
         theme_mode: if is_dark_theme() { "dark" } else { "light" }.to_string(),
         default_view: default_view(),
+        language: language(),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn apply_and_save(
     show_hidden_files: bool,
     enable_thumbnails: bool,
@@ -76,6 +86,7 @@ pub fn apply_and_save(
     confirm_trash: bool,
     theme_mode: &str,
     default_view: &str,
+    language: &str,
 ) {
     let settings = Settings {
         show_hidden_files,
@@ -84,6 +95,7 @@ pub fn apply_and_save(
         confirm_trash,
         theme_mode: theme_mode.to_string(),
         default_view: default_view.to_string(),
+        language: language.to_string(),
     };
 
     apply_globals(&settings);
@@ -133,6 +145,14 @@ pub fn default_view() -> String {
     }
 }
 
+/// The active UI language's `i18n::Lang` code. `crate::i18n::current()` --
+/// not a separate stored value -- is the single source of truth for which
+/// language is live; this just exposes its code for display (the Settings
+/// dialog's language dropdown) and for `current()`'s round-trip to disk.
+pub fn language() -> String {
+    crate::i18n::current().code().to_string()
+}
+
 fn apply_globals(settings: &Settings) {
     SHOW_HIDDEN.store(settings.show_hidden_files, Ordering::Relaxed);
     THUMBNAILS_ENABLED.store(settings.enable_thumbnails, Ordering::Relaxed);
@@ -142,6 +162,10 @@ fn apply_globals(settings: &Settings) {
 
     let dark = settings.theme_mode == "dark";
     THEME_MODE.store(dark, Ordering::Relaxed);
+
+    // Falls back to the system locale when `language` is empty (never
+    // chosen) or names a language this build doesn't have a catalog for.
+    crate::i18n::init_from_setting(&settings.language);
 }
 
 fn save_current() {
