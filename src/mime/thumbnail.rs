@@ -173,9 +173,7 @@ fn generate_image_thumbnail(path: &Path) -> Option<String> {
     let parent = target.parent()?;
     std::fs::create_dir_all(parent).ok()?;
 
-    let pixbuf =
-        gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, THUMBNAIL_SIZE, THUMBNAIL_SIZE, true)
-            .ok()?;
+    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, THUMBNAIL_SIZE, THUMBNAIL_SIZE, true).ok()?;
     // Phone photos are stored sideways with an "orientation" flag.
     let pixbuf = pixbuf.apply_embedded_orientation().unwrap_or(pixbuf);
 
@@ -197,11 +195,15 @@ fn generate_image_thumbnail(path: &Path) -> Option<String> {
         std::process::id()
     ));
 
+    // `savev`'s option list is `&[(key, value)]` pairs, not two parallel
+    // slices -- the freedesktop thumbnail spec's two tags travel together.
     let saved = pixbuf.savev(
         &tmp_target,
         "png",
-        &["tEXt::Thumb::URI", "tEXt::Thumb::MTime"],
-        &[uri.as_str(), modified.as_str()],
+        &[
+            ("tEXt::Thumb::URI", uri.as_str()),
+            ("tEXt::Thumb::MTime", modified.as_str()),
+        ],
     );
 
     if saved.is_err() {
