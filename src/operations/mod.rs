@@ -8,6 +8,7 @@ pub mod move_op;
 pub mod privileged;
 pub mod rename;
 pub mod trash;
+pub mod undo;
 
 use crate::error::FileManagerError;
 use std::fs;
@@ -30,7 +31,8 @@ pub enum PendingOp {
 pub fn validate_name(name: &str) -> Result<&str, FileManagerError> {
     let name = name.trim();
 
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0')
+    {
         return Err(FileManagerError::InvalidName);
     }
 
@@ -47,11 +49,16 @@ pub fn validate_name(name: &str) -> Result<&str, FileManagerError> {
 /// pastes) and for the quick copy/move between the two split panes. It does
 /// block, so callers run it on a worker thread (see `run_quick_transfer` in
 /// `main.rs`).
+/// Copy or move `sources` into `destination_dir`, and report exactly what
+/// was written: `(source, destination)` for each item actually transferred
+/// -- the *real* destination, after `unique_destination` has settled any
+/// "name (1)" collision. That's what a caller needs to build an undo entry
+/// from; callers that only want a count can just take `.len()`.
 pub fn paste_pending(
     destination_dir: &Path,
     operation: PendingOp,
     sources: &[PathBuf],
-) -> Result<usize, FileManagerError> {
+) -> Result<Vec<(PathBuf, PathBuf)>, FileManagerError> {
     if !destination_dir.is_dir() {
         return Err(FileManagerError::NotADirectory);
     }
@@ -62,7 +69,7 @@ pub fn paste_pending(
         crate::filesystem::protection::ensure_modifiable(sources)?;
     }
 
-    let mut pasted = 0;
+    let mut transferred = Vec::new();
 
     for source in sources {
         let Some(file_name) = source.file_name() else {
@@ -94,10 +101,10 @@ pub fn paste_pending(
             PendingOp::Move => move_op::move_path(source, &destination)?,
         }
 
-        pasted += 1;
+        transferred.push((source.clone(), destination));
     }
 
-    Ok(pasted)
+    Ok(transferred)
 }
 
 /// `true` if *something* is already at `path` -- including a dangling
@@ -262,7 +269,7 @@ mod tests {
 
         let moved = paste_pending(&dst, PendingOp::Move, &[src.join("a.txt")]).unwrap();
 
-        assert_eq!(moved, 1);
+        assert_eq!(moved, vec![(src.join("a.txt"), dst.join("a (1).txt"))]);
         assert!(!src.join("a.txt").exists());
         assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "old");
         assert_eq!(fs::read_to_string(dst.join("a (1).txt")).unwrap(), "new");
@@ -271,7 +278,7 @@ mod tests {
         // not a rename to "a (2).txt".
         let again = paste_pending(&dst, PendingOp::Move, &[dst.join("a.txt")]).unwrap();
 
-        assert_eq!(again, 0);
+        assert!(again.is_empty());
         assert!(dst.join("a.txt").exists());
         assert!(!dst.join("a (2).txt").exists());
 

@@ -48,6 +48,17 @@ pub enum JobMessage {
     Finished {
         result: Result<usize, String>,
     },
+    /// One paste task actually written: `(source, destination)`, the real
+    /// destination after any "name (1)" collision handling. Only the paste
+    /// job sends these; every other job kind simply never does, and a
+    /// listener that doesn't care (the progress bar) just ignores them.
+    /// `operations::undo` is what does care -- see `ui::progress`, which
+    /// collects these across a job and hands them to its caller alongside
+    /// the final result.
+    Transferred {
+        source: PathBuf,
+        destination: PathBuf,
+    },
 }
 
 pub struct JobHandle {
@@ -225,6 +236,11 @@ pub fn start_paste_job(
                     PendingOp::Move => move_path_with_progress(source, &target, &mut state),
                 }
                 .map_err(|err| err.to_string())?;
+
+                let _ = state.sender.send_blocking(JobMessage::Transferred {
+                    source: source.clone(),
+                    destination: target,
+                });
 
                 completed += 1;
             }

@@ -225,7 +225,12 @@ pub fn start_batch_rename_job(
 /// One rename in flight: (original path, temporary path, final path).
 type Staged = (PathBuf, PathBuf, PathBuf);
 
-fn run_batch_rename(
+/// The staged (temp-name), rollback-safe rename engine `start_batch_rename_job`
+/// runs on its worker thread. Also called directly by `operations::undo` to
+/// reverse or replay a batch rename -- same safety guarantees (a swap or
+/// chain of renames can't clobber a file mid-batch, and a failure or cancel
+/// puts everything back), just without a job queue around it.
+pub(crate) fn run_batch_rename(
     renames: &[(PathBuf, PathBuf)],
     sender: &Sender<JobMessage>,
     cancel: Arc<AtomicBool>,
@@ -469,12 +474,7 @@ mod tests {
         let leftovers = fs::read_dir(&dir)
             .unwrap()
             .flatten()
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".mitos_rename")
-            })
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".mitos_rename"))
             .count();
         assert_eq!(leftovers, 0);
 
@@ -491,10 +491,7 @@ mod tests {
         // The second rename targets a folder that doesn't exist, so it fails
         // after the first has already been placed.
         let broken_target = dir.join("no-such-folder").join("b2");
-        let done = run(
-            &[(a.clone(), dir.join("a2")), (b.clone(), broken_target)],
-            false,
-        );
+        let done = run(&[(a.clone(), dir.join("a2")), (b.clone(), broken_target)], false);
 
         assert!(done.is_err());
         assert_eq!(fs::read_to_string(&a).unwrap(), "was a");
