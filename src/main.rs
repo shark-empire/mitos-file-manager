@@ -3,6 +3,7 @@ mod config;
 mod desktop;
 mod error;
 mod filesystem;
+mod i18n;
 mod mime;
 mod navigation;
 mod operations;
@@ -352,7 +353,7 @@ fn paste_into_current_tab(job_ui: JobUi) {
         };
 
         let Some((operation, sources)) = plan else {
-            dialogs::show_info(&job_ui.window, "Nothing to paste", NOTHING_TO_PASTE);
+            dialogs::show_info(&job_ui.window, &i18n::tr("Nothing to paste"), &i18n::tr(NOTHING_TO_PASTE));
             return;
         };
 
@@ -403,6 +404,26 @@ fn refresh_split_pane(location_entry: &Entry) {
     }
 }
 
+/// Point the active tab at `path` and refresh everything that follows from
+/// that (the file watcher included). Shared by every "a location just
+/// became reachable" callback: Connect to Server, mounting a drive from
+/// the sidebar, and browsing/mounting a discovered network location.
+fn navigate_active_tab_to(job_ui: &JobUi, path: PathBuf) {
+    if let Some((tab_state, _, store, _)) = get_active_widgets(&job_ui.notebook) {
+        navigate_to(&tab_state, path);
+        refresh_tab(
+            &tab_state,
+            &store,
+            &job_ui.ctx,
+            &job_ui.location_entry,
+            &job_ui.search_entry,
+            &job_ui.hidden_toggle,
+            &job_ui.sidebar_list,
+        );
+        update_watcher(&job_ui.notebook, &job_ui.watcher_manager);
+    }
+}
+
 /// Copy or move `sources` into `destination` without the progress dialog:
 /// `operations::paste_pending` runs on a worker thread (so a big folder
 /// doesn't freeze the window) and the result comes back to the GTK thread.
@@ -420,15 +441,16 @@ fn run_quick_transfer(
 
     if let Some(status_label) = get_obj_data::<_, Label>(&job_ui.location_entry, "status-label") {
         let verb = if matches!(operation, PendingOp::Move) {
-            "Moving"
+            i18n::tr("Moving")
         } else {
-            "Copying"
+            i18n::tr("Copying")
         };
 
         status_label.set_label(&format!("{verb} {} item(s)…", sources.len()));
     }
 
-    let (sender, receiver) = async_channel::bounded::<Result<usize, String>>(1);
+    let (sender, receiver) =
+        async_channel::bounded::<Result<Vec<(PathBuf, PathBuf)>, String>>(1);
 
     std::thread::spawn(move || {
         let result = operations::paste_pending(&destination, operation, &sources)
@@ -443,16 +465,25 @@ fn run_quick_transfer(
         };
 
         match result {
-            Ok(0) => dialogs::show_info(
+            Ok(pairs) if pairs.is_empty() => dialogs::show_info(
                 &job_ui.window,
-                "Nothing to do",
-                "Everything selected is already in that folder.",
+                &i18n::tr("Nothing to do"),
+                &i18n::tr("Everything selected is already in that folder."),
             ),
-            Ok(count) => send_job_notification(
-                &job_ui.window,
-                "Operation complete",
-                &format!("{count} item(s) processed"),
-            ),
+            Ok(pairs) => {
+                let count = pairs.len();
+
+                job_ui
+                    .ctx
+                    .borrow_mut()
+                    .push_undo(operations::undo::UndoableAction::Pasted { operation, pairs });
+
+                send_job_notification(
+                    &job_ui.window,
+                    &i18n::tr("Operation complete"),
+                    &format!("{count} item(s) processed"),
+                );
+            }
             Err(err) => dialogs::show_error(
                 &job_ui.window,
                 &format!("Could not finish the operation: {err}"),
@@ -460,6 +491,88 @@ fn run_quick_transfer(
         }
 
         refresh_after_change(&job_ui);
+    });
+}
+
+/// Show `text` in the status bar, if the tab's status label can be found.
+fn set_status(job_ui: &JobUi, text: &str) {
+    if let Some(status_label) = get_obj_data::<_, Label>(&job_ui.location_entry, "status-label") {
+        status_label.set_label(text);
+    }
+}
+
+/// Reverse the most recent undoable action, if there is one. The actual
+/// filesystem work (`operations::undo::undo`) runs on a background thread
+/// -- undoing a large move can take a moment -- and the outcome is shown
+/// in the status bar, or as an error dialog if nothing could be undone.
+fn perform_undo(job_ui: JobUi) {
+    let popped = job_ui.ctx.borrow_mut().undo_stack.pop();
+
+    let Some(action) = popped else {
+        set_status(&job_ui, &i18n::tr("Nothing to undo"));
+        return;
+    };
+
+    let (sender, receiver) =
+        async_channel::bounded::<Result<operations::undo::UndoResult, String>>(1);
+
+    std::thread::spawn(move || {
+        let _ = sender.send_blocking(operations::undo::undo(&action));
+    });
+
+    glib::MainContext::default().spawn_local(async move {
+        let Ok(result) = receiver.recv().await else {
+            return;
+        };
+
+        match result {
+            Ok(outcome) => {
+                // What redo should do to bring this back -- not
+                // necessarily `action` itself; see `operations::undo`.
+                if let Some(inverse) = outcome.inverse {
+                    job_ui.ctx.borrow_mut().push_redo_raw(inverse);
+                }
+
+                set_status(&job_ui, &outcome.message);
+                refresh_after_change(&job_ui);
+            }
+            Err(err) => dialogs::show_error(&job_ui.window, &err),
+        }
+    });
+}
+
+/// The mirror of `perform_undo`: replays the most recently undone action.
+fn perform_redo(job_ui: JobUi) {
+    let popped = job_ui.ctx.borrow_mut().redo_stack.pop();
+
+    let Some(action) = popped else {
+        set_status(&job_ui, &i18n::tr("Nothing to redo"));
+        return;
+    };
+
+    let (sender, receiver) =
+        async_channel::bounded::<Result<operations::undo::UndoResult, String>>(1);
+
+    std::thread::spawn(move || {
+        let _ = sender.send_blocking(operations::undo::redo(&action));
+    });
+
+    glib::MainContext::default().spawn_local(async move {
+        let Ok(result) = receiver.recv().await else {
+            return;
+        };
+
+        match result {
+            Ok(outcome) => {
+                if let Some(inverse) = outcome.inverse {
+                    job_ui.ctx.borrow_mut().push_undo_raw(inverse);
+                }
+
+                set_status(&job_ui, &outcome.message);
+                refresh_after_change(&job_ui);
+            }
+            Err(err) => dialogs::show_error(&job_ui.window, &err),
+        }
     });
 }
 
@@ -475,7 +588,9 @@ fn portal_reply(result: Result<gio::File, glib::Error>) -> portal::service::Port
             // with no FUSE mount, say). A caller expecting a filesystem
             // path can't do anything with an empty string, so report the
             // failure instead of pretending a selection was made.
-            None => PortalResponse::Error("The selected location has no local path".to_string()),
+            None => PortalResponse::Error(
+                "The selected location has no local path".to_string(),
+            ),
         },
         // Dismissed, or closed without choosing anything.
         Err(_) => PortalResponse::Cancelled,
@@ -586,7 +701,8 @@ fn start_compress_zip_job_ui(
         return;
     }
 
-    let archive_path = operations::archive::default_archive_path(&destination_dir, &sources, "zip");
+    let archive_path =
+        operations::archive::default_archive_path(&destination_dir, &sources, "zip");
 
     let Some(queue) = get_obj_data::<_, JobQueue>(location_entry, "job-queue") else {
         return;
@@ -801,9 +917,9 @@ fn confirm_and_delete_permanently(job_ui: &JobUi, paths: Vec<PathBuf>) {
 
     dialogs::confirm_then(
         &window,
-        "Delete Permanently?",
+        &i18n::tr("Delete Permanently?"),
         &message,
-        "Delete",
+        &i18n::tr("Delete"),
         true,
         move || {
             job_ui.enqueue(JobRequest::Delete {
@@ -834,6 +950,26 @@ fn is_permission_denied(err: &error::FileManagerError) -> bool {
     )
 }
 
+/// What a successful run of a `JobRequest` needs recorded for Undo.
+/// `Delete`, `CompressZip`, `CompressTarGz` and `ExtractArchive` have no
+/// entry here -- permanent deletion is never undoable by design, and
+/// archive jobs aren't (yet) reversible -- so they fall through to `None`.
+enum PendingUndo {
+    Paste(PendingOp),
+    Trash(Vec<PathBuf>),
+    BatchRename(Vec<(PathBuf, PathBuf)>),
+    None,
+}
+
+fn pending_undo_for(request: &JobRequest) -> PendingUndo {
+    match request {
+        JobRequest::Paste { operation, .. } => PendingUndo::Paste(*operation),
+        JobRequest::Trash { paths } => PendingUndo::Trash(paths.clone()),
+        JobRequest::BatchRename { renames } => PendingUndo::BatchRename(renames.clone()),
+        _ => PendingUndo::None,
+    }
+}
+
 /// The administrator equivalent of `request`, if it has one.
 fn elevated_retry_for(request: &JobRequest) -> Option<ElevatedRetry> {
     use operations::jobs::ConflictAction;
@@ -862,9 +998,8 @@ fn elevated_retry_for(request: &JobRequest) -> Option<ElevatedRetry> {
 
             Some(ElevatedRetry {
                 operation: Operation::Paste { kind, entries },
-                prompt:
-                    "MITOS Files doesn't have permission to do this. Retry it as administrator?"
-                        .to_string(),
+                prompt: "MITOS Files doesn't have permission to do this. Retry it as administrator?"
+                    .to_string(),
             })
         }
         JobRequest::Delete { paths } => Some(ElevatedRetry {
@@ -918,9 +1053,9 @@ fn offer_elevated_retry(job_ui: &JobUi, retry: &ElevatedRetry, error: &str) {
 
     dialogs::confirm_then(
         &window,
-        "Administrator Permission Needed",
+        &i18n::tr("Administrator Permission Needed"),
         &message,
-        "Retry as Administrator",
+        &i18n::tr("Retry as Administrator"),
         true,
         move || run_elevated(job_ui.clone(), operation.clone()),
     );
@@ -931,7 +1066,7 @@ fn offer_elevated_retry(job_ui: &JobUi, retry: &ElevatedRetry, error: &str) {
 /// the outcome.
 fn run_elevated(job_ui: JobUi, operation: operations::privileged::Operation) {
     if let Some(status_label) = get_obj_data::<_, Label>(&job_ui.location_entry, "status-label") {
-        status_label.set_label("Waiting for administrator authentication\u{2026}");
+        status_label.set_label(&i18n::tr("Waiting for administrator authentication\u{2026}"));
     }
 
     let (sender, receiver) = async_channel::bounded::<Result<(), String>>(1);
@@ -1057,6 +1192,11 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
     // administrator (`None` for jobs where that makes no sense).
     let elevated_retry = elevated_retry_for(&request);
 
+    // What a *successful* run of this job needs recorded for Undo --
+    // captured now for the same reason as `elevated_retry`: `request` is
+    // moved into the dispatch below.
+    let pending_undo = pending_undo_for(&request);
+
     let (handle, title) = match request {
         JobRequest::Paste { operation, tasks } => {
             let handle = operations::jobs::start_paste_job(operation, tasks, sender);
@@ -1111,23 +1251,60 @@ fn start_next_job(queue: &JobQueue, ui: JobUi) {
     let sidebar_list = ui.sidebar_list.clone();
     let watcher_manager = ui.watcher_manager.clone();
 
-    ui::progress::show_progress_dialog(&ui.window, title, handle, receiver, move |result| {
+    ui::progress::show_progress_dialog(
+        &ui.window,
+        &i18n::tr(title),
+        handle,
+        receiver,
+        move |result, transferred| {
         // Native desktop notification via the session notification daemon
         match &result {
             Ok(count) => send_job_notification(
                 &window_error,
-                "Operation complete",
-                &format!("{title}: {count} item(s) processed"),
+                &i18n::tr("Operation complete"),
+                &format!("{}: {count} item(s) processed", i18n::tr(title)),
             ),
             Err(err) if err.contains("Cancelled") => {
-                send_job_notification(&window_error, "Operation cancelled", title);
+                send_job_notification(&window_error, &i18n::tr("Operation cancelled"), &i18n::tr(title));
             }
             Err(err) => {
                 send_job_notification(
                     &window_error,
-                    "Operation failed",
-                    &format!("{title}: {err}"),
+                    &i18n::tr("Operation failed"),
+                    &format!("{}: {err}", i18n::tr(title)),
                 );
+            }
+        }
+
+        // Record what just happened as undoable, if it's a kind of job
+        // that can be.
+        if result.is_ok() {
+            let action = match &pending_undo {
+                PendingUndo::Paste(operation) if !transferred.is_empty() => {
+                    Some(operations::undo::UndoableAction::Pasted {
+                        operation: *operation,
+                        pairs: transferred,
+                    })
+                }
+                PendingUndo::Trash(paths) => {
+                    let items = operations::undo::find_recently_trashed(paths);
+
+                    if items.is_empty() {
+                        None
+                    } else {
+                        Some(operations::undo::UndoableAction::Trashed { items })
+                    }
+                }
+                PendingUndo::BatchRename(renames) => {
+                    Some(operations::undo::UndoableAction::BatchRenamed {
+                        renames: renames.clone(),
+                    })
+                }
+                _ => None,
+            };
+
+            if let Some(action) = action {
+                ctx.borrow_mut().push_undo(action);
             }
         }
 
@@ -1295,7 +1472,7 @@ fn start_directory_load(
     // they are until the new listing is ready, so it doesn't flicker.
     if folder_changed {
         store.remove_all();
-        show_items_page(store, 0, "Loading\u{2026}");
+        show_items_page(store, 0, &i18n::tr("Loading\u{2026}"));
     }
 
     let (sender, receiver) = async_channel::bounded::<LoadedDirectory>(1);
@@ -1392,9 +1569,9 @@ fn finish_directory_load(
         store,
         item_count,
         if query.is_empty() {
-            "This folder is empty"
+            &i18n::tr("This folder is empty")
         } else {
-            "No results found"
+            &i18n::tr("No results found")
         },
     );
 
@@ -1422,11 +1599,11 @@ fn finish_directory_load(
         let mut notes = String::new();
 
         if !writable {
-            notes.push_str(" \u{b7} read-only");
+            notes.push_str(&format!(" \u{b7} {}", i18n::tr("read-only")));
         }
 
         if system_area {
-            notes.push_str(" \u{b7} system location");
+            notes.push_str(&format!(" \u{b7} {}", i18n::tr("system location")));
         }
 
         status_label.set_label(&format!(
@@ -1461,7 +1638,7 @@ fn add_tab(
     scrolled.set_child(Some(&grid));
     scrolled.set_vexpand(true);
 
-    let empty_label = Label::new(Some("This folder is empty"));
+    let empty_label = Label::new(Some(&i18n::tr("This folder is empty")));
     empty_label.set_vexpand(true);
     empty_label.set_valign(gtk::Align::Center);
     empty_label.add_css_class("dim-label");
@@ -1917,12 +2094,12 @@ fn build_ui(
     )));
 
     let toolbar1 = GtkBox::new(Orientation::Horizontal, 6);
-    let back_btn = Button::with_label("Back");
-    let forward_btn = Button::with_label("Forward");
-    let up_btn = Button::with_label("Up");
-    let home_btn = Button::with_label("Home");
-    let new_window_btn = Button::with_label("New Window");
-    let bookmark_btn = Button::with_label("Bookmark");
+    let back_btn = Button::with_label(&i18n::tr("Back"));
+    let forward_btn = Button::with_label(&i18n::tr("Forward"));
+    let up_btn = Button::with_label(&i18n::tr("Up"));
+    let home_btn = Button::with_label(&i18n::tr("Home"));
+    let new_window_btn = Button::with_label(&i18n::tr("New Window"));
+    let bookmark_btn = Button::with_label(&i18n::tr("Bookmark"));
     let help_btn = Button::with_label("?");
 
     let (location_bar, location_stack, path_crumbs, location_entry) = ui::path_bar::build();
@@ -1933,7 +2110,7 @@ fn build_ui(
     search_entry.set_placeholder_text(Some("Search..."));
     search_entry.set_width_request(200);
 
-    let search_recursive_toggle = CheckButton::with_label("Recursive");
+    let search_recursive_toggle = CheckButton::with_label(&i18n::tr("Recursive"));
     search_recursive_toggle.set_active(true);
 
     // Narrow a search to one kind of file. Entry 0 is "no filter"; the rest
@@ -1950,7 +2127,7 @@ fn build_ui(
     };
 
     // Also look inside text files, not just at their names.
-    let search_content_toggle = CheckButton::with_label("Contents");
+    let search_content_toggle = CheckButton::with_label(&i18n::tr("Contents"));
 
     toolbar1.append(&back_btn);
     toolbar1.append(&forward_btn);
@@ -1966,21 +2143,21 @@ fn build_ui(
     toolbar1.append(&help_btn);
 
     let toolbar2 = GtkBox::new(Orientation::Horizontal, 6);
-    let new_folder_btn = Button::with_label("New Folder");
-    let new_file_btn = Button::with_label("New File");
-    let rename_btn = Button::with_label("Rename");
-    let copy_btn = Button::with_label("Copy");
-    let move_btn = Button::with_label("Move");
-    let list_toggle = CheckButton::with_label("List");
+    let new_folder_btn = Button::with_label(&i18n::tr("New Folder"));
+    let new_file_btn = Button::with_label(&i18n::tr("New File"));
+    let rename_btn = Button::with_label(&i18n::tr("Rename"));
+    let copy_btn = Button::with_label(&i18n::tr("Copy"));
+    let move_btn = Button::with_label(&i18n::tr("Move"));
+    let list_toggle = CheckButton::with_label(&i18n::tr("List"));
     list_toggle.set_active(VIEW_MODE_LIST.load(Ordering::Relaxed));
-    let paste_btn = Button::with_label("Paste");
-    let trash_btn = Button::with_label("Trash");
-    let open_trash_btn = Button::with_label("Open Trash");
-    let settings_btn = Button::with_label("Settings");
-    let preview_toggle = CheckButton::with_label("Preview");
-    let split_toggle = CheckButton::with_label("Split View");
-    let tree_toggle = CheckButton::with_label("Tree");
-    let hidden_toggle = CheckButton::with_label("Hidden");
+    let paste_btn = Button::with_label(&i18n::tr("Paste"));
+    let trash_btn = Button::with_label(&i18n::tr("Trash"));
+    let open_trash_btn = Button::with_label(&i18n::tr("Open Trash"));
+    let settings_btn = Button::with_label(&i18n::tr("Settings"));
+    let preview_toggle = CheckButton::with_label(&i18n::tr("Preview"));
+    let split_toggle = CheckButton::with_label(&i18n::tr("Split View"));
+    let tree_toggle = CheckButton::with_label(&i18n::tr("Tree"));
+    let hidden_toggle = CheckButton::with_label(&i18n::tr("Hidden"));
 
     toolbar2.append(&new_folder_btn);
     toolbar2.append(&new_file_btn);
@@ -2087,7 +2264,7 @@ fn build_ui(
     content.append(&split_pane.container);
 
     let status_bar = GtkBox::new(Orientation::Horizontal, 6);
-    let status_label = Label::new(Some("Ready"));
+    let status_label = Label::new(Some(&i18n::tr("Ready")));
     status_label.set_halign(gtk::Align::Start);
     status_label.set_hexpand(true);
     let selection_label = Label::new(Some(""));
@@ -2227,8 +2404,7 @@ fn build_ui(
                 return None;
             }
 
-            let files: Vec<gio::File> =
-                paths.iter().map(|path| gio::File::for_path(path)).collect();
+            let files: Vec<gio::File> = paths.iter().map(|path| gio::File::for_path(path)).collect();
             let file_list = gtk::gdk::FileList::from_array(&files);
 
             Some(gtk::gdk::ContentProvider::for_value(&file_list.to_value()))
@@ -2348,6 +2524,26 @@ fn build_ui(
             }
 
             match key {
+                k if ctrl && k == gtk::gdk::Key::z => {
+                    let job_ui = JobUi::new(
+                        &window,
+                        &notebook,
+                        &ctx,
+                        &location_entry,
+                        &search_entry,
+                        &hidden_toggle,
+                        &sidebar_list,
+                        &watcher_manager,
+                    );
+
+                    if shift {
+                        perform_redo(job_ui);
+                    } else {
+                        perform_undo(job_ui);
+                    }
+
+                    return glib::Propagation::Stop;
+                }
                 k if ctrl && k == gtk::gdk::Key::f => {
                     search_entry.grab_focus();
                     return glib::Propagation::Stop;
@@ -2584,34 +2780,42 @@ fn build_ui(
 
                             dialogs::show_text_dialog(
                                 &window_dialog,
-                                "Rename",
+                                &i18n::tr("Rename"),
                                 &initial_name,
-                                "Rename",
+                                &i18n::tr("Rename"),
                                 move |name| {
                                     if name.is_empty() {
                                         return;
                                     }
-                                    if let Err(err) =
-                                        operations::rename::rename_path(&source, &name)
-                                    {
-                                        report_or_elevate(
-                                            &JobUi::new(
-                                                &window_err,
-                                                &notebook_clone,
-                                                &ctx_clone,
-                                                &location_entry_clone,
-                                                &search_entry_clone,
-                                                &hidden_toggle_clone,
-                                                &sidebar_list_clone,
-                                                &watcher_manager_clone,
-                                            ),
-                                            "rename",
-                                            &err,
-                                            operations::privileged::Operation::Rename {
-                                                from: source.clone(),
-                                                to: source.with_file_name(&name),
-                                            },
-                                        );
+                                    match operations::rename::rename_path(&source, &name) {
+                                        Ok(new_path) => {
+                                            ctx_clone.borrow_mut().push_undo(
+                                                operations::undo::UndoableAction::Renamed {
+                                                    from: source.clone(),
+                                                    to: new_path,
+                                                },
+                                            );
+                                        }
+                                        Err(err) => {
+                                            report_or_elevate(
+                                                &JobUi::new(
+                                                    &window_err,
+                                                    &notebook_clone,
+                                                    &ctx_clone,
+                                                    &location_entry_clone,
+                                                    &search_entry_clone,
+                                                    &hidden_toggle_clone,
+                                                    &sidebar_list_clone,
+                                                    &watcher_manager_clone,
+                                                ),
+                                                "rename",
+                                                &err,
+                                                operations::privileged::Operation::Rename {
+                                                    from: source.clone(),
+                                                    to: source.with_file_name(&name),
+                                                },
+                                            );
+                                        }
                                     }
                                     if let Some((tab_state, _, store, _)) =
                                         get_active_widgets(&notebook_clone)
@@ -2708,16 +2912,16 @@ fn build_ui(
 
             // Entry 0 of the dropdown is "All types"; entry N is
             // `FileTypeFilter::all()[N - 1]`.
-            let file_types: Vec<search::filters::FileTypeFilter> = (search_type_dropdown.selected()
-                as usize)
-                .checked_sub(1)
-                .and_then(|index| {
-                    search::filters::FileTypeFilter::all()
-                        .into_iter()
-                        .nth(index)
-                })
-                .into_iter()
-                .collect();
+            let file_types: Vec<search::filters::FileTypeFilter> =
+                (search_type_dropdown.selected() as usize)
+                    .checked_sub(1)
+                    .and_then(|index| {
+                        search::filters::FileTypeFilter::all()
+                            .into_iter()
+                            .nth(index)
+                    })
+                    .into_iter()
+                    .collect();
 
             // Nothing typed and no type chosen: back to the plain folder view.
             if query.is_empty() && file_types.is_empty() {
@@ -2786,13 +2990,14 @@ fn build_ui(
             search::engine::start_search(root.clone(), filters, cancel, tx);
 
             if let Some(status_label) = get_obj_data::<_, Label>(&location_entry, "status-label") {
-                status_label.set_label("Searching…");
+                status_label.set_label(&i18n::tr("Searching\u{2026}"));
             }
 
             let location_entry = location_entry.clone();
 
-            glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-                match rx.try_recv() {
+            glib::timeout_add_local(
+                std::time::Duration::from_millis(50),
+                move || match rx.try_recv() {
                     Ok(results) => {
                         // The tab may have moved to another folder while the
                         // search ran; results for the old one would replace
@@ -2818,7 +3023,7 @@ fn build_ui(
                             s.load_generation += 1;
                         }
 
-                        show_items_page(&store, count, "No results found");
+                        show_items_page(&store, count, &i18n::tr("No results found"));
 
                         if let Some(status_label) =
                             get_obj_data::<_, Label>(&location_entry, "status-label")
@@ -2841,8 +3046,8 @@ fn build_ui(
                     // search cancelled it, and that one owns the grid now.
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
                     Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                }
-            });
+                },
+            );
         });
     }
 
@@ -2926,29 +3131,40 @@ fn build_ui(
                 if let Some(window) =
                     get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window")
                 {
-                    let notebook = notebook.clone();
-                    let ctx = ctx.clone();
-                    let location_entry = location_entry.clone();
-                    let search_entry = search_entry.clone();
-                    let hidden_toggle = hidden_toggle.clone();
-                    let sidebar_list_for_connect = sidebar_list_for_closure.clone();
-                    let watcher_manager = watcher_manager.clone();
+                    let job_ui = JobUi::new(
+                        &window,
+                        &notebook,
+                        &ctx,
+                        &location_entry,
+                        &search_entry,
+                        &hidden_toggle,
+                        &sidebar_list_for_closure,
+                        &watcher_manager,
+                    );
 
                     dialogs::show_connect_to_server(&window, move |path| {
-                        if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                            navigate_to(&tab_state, path);
-                            refresh_tab(
-                                &tab_state,
-                                &store,
-                                &ctx,
-                                &location_entry,
-                                &search_entry,
-                                &hidden_toggle,
-                                &sidebar_list_for_connect,
-                            );
-                            update_watcher(&notebook, &watcher_manager);
-                        }
+                        navigate_active_tab_to(&job_ui, path);
                     });
+                }
+                return;
+            }
+
+            if row.widget_name() == "action:browse-network" {
+                if let Some(window) =
+                    get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window")
+                {
+                    let job_ui = JobUi::new(
+                        &window,
+                        &notebook,
+                        &ctx,
+                        &location_entry,
+                        &search_entry,
+                        &hidden_toggle,
+                        &sidebar_list_for_closure,
+                        &watcher_manager,
+                    );
+
+                    show_network_browser(row.upcast_ref::<gtk::Widget>(), job_ui);
                 }
                 return;
             }
@@ -2966,28 +3182,19 @@ fn build_ui(
                     volume,
                     get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window"),
                 ) {
-                    let notebook = notebook.clone();
-                    let ctx = ctx.clone();
-                    let location_entry = location_entry.clone();
-                    let search_entry = search_entry.clone();
-                    let hidden_toggle = hidden_toggle.clone();
-                    let sidebar_list = sidebar_list_for_closure.clone();
-                    let watcher_manager = watcher_manager.clone();
+                    let job_ui = JobUi::new(
+                        &window,
+                        &notebook,
+                        &ctx,
+                        &location_entry,
+                        &search_entry,
+                        &hidden_toggle,
+                        &sidebar_list_for_closure,
+                        &watcher_manager,
+                    );
 
                     sidebar::mount_volume(&volume, &window, move |path| {
-                        if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                            navigate_to(&tab_state, path);
-                            refresh_tab(
-                                &tab_state,
-                                &store,
-                                &ctx,
-                                &location_entry,
-                                &search_entry,
-                                &hidden_toggle,
-                                &sidebar_list,
-                            );
-                            update_watcher(&notebook, &watcher_manager);
-                        }
+                        navigate_active_tab_to(&job_ui, path);
                     });
                 }
 
@@ -3174,7 +3381,7 @@ fn build_ui(
         help_btn.connect_clicked(move |_| {
             let shortcuts = ui::accessibility::setup_keyboard_help();
 
-            let dialog = dialogs::build_dialog(&window, "Keyboard Shortcuts");
+            let dialog = dialogs::build_dialog(&window, &i18n::tr("Keyboard Shortcuts"));
 
             let grid = gtk::Grid::new();
             grid.set_column_spacing(16);
@@ -3196,7 +3403,7 @@ fn build_ui(
 
             dialog.content.append(&grid);
 
-            let close_btn = dialogs::dialog_button(&dialog.button_row, "Close");
+            let close_btn = dialogs::dialog_button(&dialog.button_row, &i18n::tr("Close"));
             let window_for_close = dialog.window.clone();
             close_btn.connect_clicked(move |_| window_for_close.close());
 
@@ -3397,7 +3604,12 @@ fn build_ui(
 
         new_folder_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                dialogs::show_text_dialog(&window_parent, "New Folder", "New Folder", "Create", {
+                dialogs::show_text_dialog(
+                    &window_parent,
+                    &i18n::tr("New Folder"),
+                    &i18n::tr("New Folder"),
+                    &i18n::tr("Create"),
+                    {
                     let window_error = window_parent.clone();
                     let tab_state = tab_state.clone();
                     let store = store.clone();
@@ -3414,8 +3626,11 @@ fn build_ui(
                             return;
                         }
                         let parent = tab_state.borrow().current.clone();
-                        if let Err(err) = operations::create::create_folder(&parent, &name) {
-                            report_or_elevate(
+                        match operations::create::create_folder(&parent, &name) {
+                            Ok(path) => ctx.borrow_mut().push_undo(
+                                operations::undo::UndoableAction::CreatedFolder { path },
+                            ),
+                            Err(err) => report_or_elevate(
                                 &JobUi::new(
                                     &window_error,
                                     &notebook,
@@ -3429,7 +3644,7 @@ fn build_ui(
                                 "create folder",
                                 &err,
                                 operations::privileged::Operation::CreateFolder(parent.join(&name)),
-                            );
+                            ),
                         }
                         refresh_tab(
                             &tab_state,
@@ -3459,7 +3674,12 @@ fn build_ui(
 
         new_file_btn.connect_clicked(move |_| {
             if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
-                dialogs::show_text_dialog(&window_parent, "New File", "new-file.txt", "Create", {
+                dialogs::show_text_dialog(
+                    &window_parent,
+                    &i18n::tr("New File"),
+                    "new-file.txt",
+                    &i18n::tr("Create"),
+                    {
                     let window_error = window_parent.clone();
                     let tab_state = tab_state.clone();
                     let store = store.clone();
@@ -3476,8 +3696,11 @@ fn build_ui(
                             return;
                         }
                         let parent = tab_state.borrow().current.clone();
-                        if let Err(err) = operations::create::create_file(&parent, &name) {
-                            report_or_elevate(
+                        match operations::create::create_file(&parent, &name) {
+                            Ok(path) => ctx.borrow_mut().push_undo(
+                                operations::undo::UndoableAction::CreatedFile { path },
+                            ),
+                            Err(err) => report_or_elevate(
                                 &JobUi::new(
                                     &window_error,
                                     &notebook,
@@ -3491,7 +3714,7 @@ fn build_ui(
                                 "create file",
                                 &err,
                                 operations::privileged::Operation::CreateFile(parent.join(&name)),
-                            );
+                            ),
                         }
                         refresh_tab(
                             &tab_state,
@@ -3530,7 +3753,12 @@ fn build_ui(
                 let source = item.get_path();
                 let initial_name = item.name();
 
-                dialogs::show_text_dialog(&window_parent, "Rename", &initial_name, "Rename", {
+                dialogs::show_text_dialog(
+                    &window_parent,
+                    &i18n::tr("Rename"),
+                    &initial_name,
+                    &i18n::tr("Rename"),
+                    {
                     let window_error = window_parent.clone();
                     let tab_state = tab_state.clone();
                     let store = store.clone();
@@ -3546,25 +3774,35 @@ fn build_ui(
                         if name.is_empty() {
                             return;
                         }
-                        if let Err(err) = operations::rename::rename_path(&source, &name) {
-                            report_or_elevate(
-                                &JobUi::new(
-                                    &window_error,
-                                    &notebook,
-                                    &ctx,
-                                    &location_entry,
-                                    &search_entry,
-                                    &hidden_toggle,
-                                    &sidebar_list,
-                                    &watcher_manager,
-                                ),
-                                "rename",
-                                &err,
-                                operations::privileged::Operation::Rename {
-                                    from: source.clone(),
-                                    to: source.with_file_name(&name),
-                                },
-                            );
+                        match operations::rename::rename_path(&source, &name) {
+                            Ok(new_path) => {
+                                ctx.borrow_mut().push_undo(
+                                    operations::undo::UndoableAction::Renamed {
+                                        from: source.clone(),
+                                        to: new_path,
+                                    },
+                                );
+                            }
+                            Err(err) => {
+                                report_or_elevate(
+                                    &JobUi::new(
+                                        &window_error,
+                                        &notebook,
+                                        &ctx,
+                                        &location_entry,
+                                        &search_entry,
+                                        &hidden_toggle,
+                                        &sidebar_list,
+                                        &watcher_manager,
+                                    ),
+                                    "rename",
+                                    &err,
+                                    operations::privileged::Operation::Rename {
+                                        from: source.clone(),
+                                        to: source.with_file_name(&name),
+                                    },
+                                );
+                            }
                         }
                         refresh_tab(
                             &tab_state,
@@ -4085,26 +4323,26 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
     menu_box.set_margin_start(6);
     menu_box.set_margin_end(6);
 
-    let open_btn = Button::with_label("Open");
-    let open_tab_btn = Button::with_label("Open in New Tab");
-    let open_with_btn = Button::with_label("Open With");
-    let compress_btn = Button::with_label("Compress to ZIP");
-    let compress_targz_btn = Button::with_label("Compress to TAR.GZ");
-    let extract_btn = Button::with_label("Extract Here");
-    let copy_btn = Button::with_label("Copy");
-    let move_btn = Button::with_label("Move");
-    let duplicate_btn = Button::with_label("Duplicate");
-    let copy_to_split_btn = Button::with_label("Copy to Split Pane");
-    let move_to_split_btn = Button::with_label("Move to Split Pane");
-    let open_in_split_btn = Button::with_label("Open in Split Pane");
-    let rename_btn = Button::with_label("Rename");
-    let batch_rename_btn = Button::with_label("Batch Rename");
-    let link_btn = Button::with_label("Create Link");
-    let copy_path_btn = Button::with_label("Copy Path");
-    let trash_btn = Button::with_label("Trash");
-    let delete_btn = Button::with_label("Delete Permanently\u{2026}");
+    let open_btn = Button::with_label(&i18n::tr("Open"));
+    let open_tab_btn = Button::with_label(&i18n::tr("Open in New Tab"));
+    let open_with_btn = Button::with_label(&i18n::tr("Open With"));
+    let compress_btn = Button::with_label(&i18n::tr("Compress to ZIP"));
+    let compress_targz_btn = Button::with_label(&i18n::tr("Compress to TAR.GZ"));
+    let extract_btn = Button::with_label(&i18n::tr("Extract Here"));
+    let copy_btn = Button::with_label(&i18n::tr("Copy"));
+    let move_btn = Button::with_label(&i18n::tr("Move"));
+    let duplicate_btn = Button::with_label(&i18n::tr("Duplicate"));
+    let copy_to_split_btn = Button::with_label(&i18n::tr("Copy to Split Pane"));
+    let move_to_split_btn = Button::with_label(&i18n::tr("Move to Split Pane"));
+    let open_in_split_btn = Button::with_label(&i18n::tr("Open in Split Pane"));
+    let rename_btn = Button::with_label(&i18n::tr("Rename"));
+    let batch_rename_btn = Button::with_label(&i18n::tr("Batch Rename"));
+    let link_btn = Button::with_label(&i18n::tr("Create Link"));
+    let copy_path_btn = Button::with_label(&i18n::tr("Copy Path"));
+    let trash_btn = Button::with_label(&i18n::tr("Trash"));
+    let delete_btn = Button::with_label(&i18n::tr("Delete Permanently\u{2026}"));
     delete_btn.add_css_class("destructive-action");
-    let properties_btn = Button::with_label("Properties");
+    let properties_btn = Button::with_label(&i18n::tr("Properties"));
 
     // A link or a duplicate goes beside the original, so it needs the
     // original's folder to be writable. (Rename, Trash and Delete stay
@@ -4359,7 +4597,7 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
             let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
             sub_box.append(&sep);
 
-            let default_btn = gtk::Button::with_label("Set Default App...");
+            let default_btn = gtk::Button::with_label(&i18n::tr("Set Default App..."));
             default_btn.set_has_frame(false);
 
             let display_apps_clone = display_apps.clone();
@@ -4536,17 +4774,28 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
             popover.popdown();
 
             let mut first_error: Option<String> = None;
+            let mut created = Vec::new();
 
             for path in &paths {
                 let Some(directory) = path.parent() else {
                     continue;
                 };
 
-                if let Err(err) = operations::link::create_symlink(path, directory) {
-                    first_error.get_or_insert_with(|| {
-                        format!("Couldn't create a link to \"{}\": {err}", path.display())
-                    });
+                match operations::link::create_symlink(path, directory) {
+                    Ok(link_path) => created.push((link_path, path.clone())),
+                    Err(err) => {
+                        first_error.get_or_insert_with(|| {
+                            format!("Couldn't create a link to \"{}\": {err}", path.display())
+                        });
+                    }
                 }
+            }
+
+            if !created.is_empty() {
+                job_ui
+                    .ctx
+                    .borrow_mut()
+                    .push_undo(operations::undo::UndoableAction::Linked { links: created });
             }
 
             if let Some(message) = first_error {
@@ -4668,32 +4917,40 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
 
             dialogs::show_text_dialog(
                 &window_for_dialog,
-                "Rename",
+                &i18n::tr("Rename"),
                 &initial_name,
-                "Rename",
+                &i18n::tr("Rename"),
                 move |name| {
                     if name.is_empty() {
                         return;
                     }
-                    if let Err(err) = operations::rename::rename_path(&source, &name) {
-                        report_or_elevate(
-                            &JobUi::new(
-                                &window_error,
-                                &notebook,
-                                &ctx,
-                                &location_entry,
-                                &search_entry,
-                                &hidden_toggle,
-                                &sidebar_list,
-                                &watcher_manager,
-                            ),
-                            "rename",
-                            &err,
-                            operations::privileged::Operation::Rename {
+                    match operations::rename::rename_path(&source, &name) {
+                        Ok(new_path) => {
+                            ctx.borrow_mut().push_undo(operations::undo::UndoableAction::Renamed {
                                 from: source.clone(),
-                                to: source.with_file_name(&name),
-                            },
-                        );
+                                to: new_path,
+                            });
+                        }
+                        Err(err) => {
+                            report_or_elevate(
+                                &JobUi::new(
+                                    &window_error,
+                                    &notebook,
+                                    &ctx,
+                                    &location_entry,
+                                    &search_entry,
+                                    &hidden_toggle,
+                                    &sidebar_list,
+                                    &watcher_manager,
+                                ),
+                                "rename",
+                                &err,
+                                operations::privileged::Operation::Rename {
+                                    from: source.clone(),
+                                    to: source.with_file_name(&name),
+                                },
+                            );
+                        }
                     }
                     if let Some((tab_state, _, store, _)) = get_active_widgets(&notebook) {
                         refresh_tab(
@@ -4833,9 +5090,9 @@ fn show_split_context_menu(
     menu_box.set_margin_start(6);
     menu_box.set_margin_end(6);
 
-    let open_btn = Button::with_label("Open");
-    let copy_btn = Button::with_label("Copy to Current Folder");
-    let move_btn = Button::with_label("Move to Current Folder");
+    let open_btn = Button::with_label(&i18n::tr("Open"));
+    let copy_btn = Button::with_label(&i18n::tr("Copy to Current Folder"));
+    let move_btn = Button::with_label(&i18n::tr("Move to Current Folder"));
 
     open_btn.set_sensitive(paths.len() == 1);
 
@@ -4916,6 +5173,7 @@ fn typeahead_select(
     }
 }
 
+
 fn send_job_notification(window: &ApplicationWindow, title: &str, body: &str) {
     if let Some(app) = window.application() {
         let notification = gio::Notification::new(title);
@@ -4988,10 +5246,7 @@ fn show_history_menu(anchor: &Button, forward: bool, job_ui: JobUi) {
                     .history
                     .jump_forward(index + 1, &current)
             } else {
-                tab_state
-                    .borrow_mut()
-                    .history
-                    .jump_back(index + 1, &current)
+                tab_state.borrow_mut().history.jump_back(index + 1, &current)
             };
 
             if let Some(target) = target {
@@ -5023,6 +5278,112 @@ fn show_history_menu(anchor: &Button, forward: bool, job_ui: JobUi) {
 }
 
 /// Right-click on a "Recent" row: clear the list.
+/// Popover for the sidebar's "Browse Network..." row: discovers nearby
+/// shares in the background (`navigation::network::discover`) and lists
+/// them as buttons that mount (if needed) and navigate there on click.
+fn show_network_browser(anchor: &gtk::Widget, job_ui: JobUi) {
+    let popover = gtk::Popover::new();
+    popover.set_has_arrow(true);
+    popover.set_autohide(true);
+    popover.set_parent(anchor);
+
+    let menu_box = GtkBox::new(Orientation::Vertical, 4);
+    menu_box.set_margin_top(6);
+    menu_box.set_margin_bottom(6);
+    menu_box.set_margin_start(6);
+    menu_box.set_margin_end(6);
+    menu_box.set_width_request(220);
+
+    let status_label = Label::new(Some(&i18n::tr("Discovering network locations\u{2026}")));
+    status_label.add_css_class("dim-label");
+    menu_box.append(&status_label);
+
+    popover.set_child(Some(&menu_box));
+    popover.connect_closed(|popover| popover.unparent());
+    popover.popup();
+
+    // Weak: the buttons built below hold their own clone, and a strong ref
+    // back from a button's own click handler to its containing popover
+    // would be a cycle nothing could ever free.
+    let popover_weak = popover.downgrade();
+
+    let (sender, receiver) = async_channel::bounded::<Vec<navigation::network::NetworkLocation>>(1);
+
+    std::thread::spawn(move || {
+        let found = navigation::network::discover(std::time::Duration::from_secs(4));
+        let _ = sender.send_blocking(found);
+    });
+
+    glib::MainContext::default().spawn_local(async move {
+        let Ok(locations) = receiver.recv().await else {
+            return;
+        };
+
+        status_label.set_label(if locations.is_empty() {
+            &i18n::tr("No network locations found")
+        } else {
+            ""
+        });
+        status_label.set_visible(locations.is_empty());
+
+        for location in locations {
+            let button = Button::with_label(&location.name);
+            button.set_has_frame(false);
+            button.set_halign(gtk::Align::Fill);
+
+            let job_ui = job_ui.clone();
+            let uri = location.uri.clone();
+            let popover_weak = popover_weak.clone();
+
+            button.connect_clicked(move |_| {
+                if let Some(popover) = popover_weak.upgrade() {
+                    popover.popdown();
+                }
+
+                open_network_location(job_ui.clone(), uri.clone());
+            });
+
+            menu_box.append(&button);
+        }
+    });
+}
+
+/// Navigate to a `network:///`-discovered URI: use its local path directly
+/// if GVfs already has one (already mounted), otherwise mount it first
+/// (prompting for credentials if the share needs them, same as Connect to
+/// Server) and navigate once that succeeds.
+fn open_network_location(job_ui: JobUi, uri: String) {
+    let file = gio::File::for_uri(&uri);
+
+    if let Some(path) = file.path() {
+        navigate_active_tab_to(&job_ui, path);
+        return;
+    }
+
+    let operation = gtk::MountOperation::new(Some(&job_ui.window));
+    let file_for_result = file.clone();
+
+    file.mount_enclosing_volume(
+        gio::MountMountFlags::NONE,
+        Some(&operation),
+        gio::Cancellable::NONE,
+        move |result| match result {
+            Ok(()) => match file_for_result.path() {
+                Some(path) => navigate_active_tab_to(&job_ui, path),
+                None => dialogs::show_error(
+                    &job_ui.window,
+                    &i18n::tr(
+                        "Connected, but MITOS Files couldn't resolve a local path for it.",
+                    ),
+                ),
+            },
+            Err(err) => {
+                dialogs::show_error(&job_ui.window, &format!("Couldn't connect: {err}"));
+            }
+        },
+    );
+}
+
 fn show_recent_context_menu(
     sidebar_list: &ListBox,
     location_entry: &Entry,
@@ -5042,7 +5403,7 @@ fn show_recent_context_menu(
     menu_box.set_margin_start(6);
     menu_box.set_margin_end(6);
 
-    let clear_btn = Button::with_label("Clear Recent Files");
+    let clear_btn = Button::with_label(&i18n::tr("Clear Recent Files"));
     let sidebar_list = sidebar_list.clone();
     let location_entry = location_entry.clone();
     let ctx = ctx.clone();
@@ -5061,9 +5422,7 @@ fn show_recent_context_menu(
             let ctx = ctx.clone();
 
             glib::timeout_add_local(std::time::Duration::from_millis(delay_ms), move || {
-                if let Some(win) =
-                    get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window")
-                {
+                if let Some(win) = get_obj_data::<_, ApplicationWindow>(&location_entry, "main-window") {
                     sidebar::build(&sidebar_list, &ctx.borrow().bookmarks, &win);
                 }
 
@@ -5101,7 +5460,7 @@ fn show_sidebar_context_menu(
     menu_box.set_margin_start(6);
     menu_box.set_margin_end(6);
 
-    let remove_btn = Button::with_label("Remove Bookmark");
+    let remove_btn = Button::with_label(&i18n::tr("Remove Bookmark"));
     let ctx_clone = ctx.clone();
     let sidebar_list_clone = sidebar_list.clone();
     let location_entry_clone = location_entry.clone();
@@ -5170,8 +5529,8 @@ fn show_default_app_picker(
 
     dialog.content.append(&scrolled);
 
-    let cancel_btn = dialogs::dialog_button(&dialog.button_row, "Cancel");
-    let accept_btn = dialogs::dialog_button(&dialog.button_row, "Set as Default");
+    let cancel_btn = dialogs::dialog_button(&dialog.button_row, &i18n::tr("Cancel"));
+    let accept_btn = dialogs::dialog_button(&dialog.button_row, &i18n::tr("Set as Default"));
     accept_btn.add_css_class("suggested-action");
 
     {
@@ -5213,12 +5572,8 @@ mod tests {
     fn only_permission_failures_are_offered_an_administrator_retry() {
         assert!(is_permission_error("Permission denied (os error 13)"));
         assert!(is_permission_error("Operation not permitted (os error 1)"));
-        assert!(!is_permission_error(
-            "No such file or directory (os error 2)"
-        ));
-        assert!(!is_permission_error(
-            "No space left on device (os error 28)"
-        ));
+        assert!(!is_permission_error("No such file or directory (os error 2)"));
+        assert!(!is_permission_error("No space left on device (os error 28)"));
     }
 
     #[test]
@@ -5272,10 +5627,7 @@ mod tests {
 
     #[test]
     fn jobs_where_root_would_not_help_have_no_retry() {
-        assert!(elevated_retry_for(&JobRequest::BatchRename {
-            renames: Vec::new()
-        })
-        .is_none());
+        assert!(elevated_retry_for(&JobRequest::BatchRename { renames: Vec::new() }).is_none());
         assert!(elevated_retry_for(&JobRequest::ExtractArchive {
             archive_path: PathBuf::from("/a.zip"),
             destination_dir: PathBuf::from("/b"),
@@ -5285,8 +5637,9 @@ mod tests {
 
     #[test]
     fn permission_denied_is_recognised_inside_file_manager_errors() {
-        let denied =
-            error::FileManagerError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let denied = error::FileManagerError::Io(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ));
         let missing =
             error::FileManagerError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
 
