@@ -13,7 +13,7 @@ tests, the GTK layer is hand-verified.
 | Filesystem browsing, folders, files | Done | Icon, list and tree views (`ui/grid_view.rs`, `list_view.rs`, `tree_view.rs`) |
 | Drives | Done | Sidebar "Devices": mounted drives, plus present-but-unmounted ones (click to mount) -- `ui/sidebar.rs` |
 | Removable devices | Done | Eject (not just unmount) for ejectable media |
-| Network locations | Done | "Connect to Server..." (smb/sftp/ftp/...), remembered servers, a "Network" sidebar section. Browsing a share needs GVfs's FUSE mount to give it a local path |
+| Network locations | Done | "Connect to Server..." (smb/sftp/ftp/...), remembered servers, "Browse Network..." discovery (`navigation/network.rs`, GIO `network:///`), a "Network" sidebar section. Browsing a share still needs GVfs's FUSE mount to give it a local path; "Browse Network..." finds only what GVfs's installed backends announce |
 | Bookmarks | Done | Add/remove (button toggles), persisted |
 | Recent files | Done | Recorded whenever something is opened; "Clear Recent Files" on right-click |
 | Search | Done | Name, contents, file type, recursive; cancellable |
@@ -74,6 +74,16 @@ tests, the GTK layer is hand-verified.
 | Privileged-operation prompts | Done | "Permission denied" offers *Retry as Administrator* (pkexec, or `MITOS_ELEVATE_COMMAND`) -- `operations/privileged.rs` |
 | Symlink safety | Done | Never followed when deleting, measuring, searching or archiving; extraction rejects paths that escape the folder; setuid bits stripped from extracted files |
 | Safe deletion | Done | Trash by default; permanent delete confirms, refuses protected paths, warns in system locations |
+
+## Beyond the original spec
+
+Added on top of the list above, not asked for by name in it:
+
+| Item | Status | Where / notes |
+|---|---|---|
+| Multiple languages | Done | `i18n/`: English, French, Spanish, Arabic, Twi. Static UI chrome -- buttons, menus, dialogs, tooltips, column headers, empty states -- is translated (`i18n::tr`); text built from runtime data (counts, file names, error messages) stays English, since correct pluralization needs per-language grammar rules this doesn't implement. Switched in Settings; new dialogs and menus pick it up immediately, the toolbar needs a restart. Twi's catalog is partial by design -- an untranslated key falls back to English rather than showing a placeholder. None of the four have had a native-speaker review yet |
+| Undo / Redo | Done | `operations/undo.rs`, Ctrl+Z / Ctrl+Shift+Z. Covers rename, create (folder/file/link), trash, copy/move (including Duplicate and drag-and-drop), batch rename. Deliberately excludes permanent delete (by design -- that confirmation says "can't be undone" and means it), Compress, and Extract. "New Folder"/"New File" only undo while still empty, so it can never eat content you added after creating one |
+| Read-only lock badges | Done | A small badge on any icon/list-view row you can't write to (`filesystem::access::can_write`) -- `ui/grid_view.rs`, `ui/list_view.rs` |
 
 ## Performance
 

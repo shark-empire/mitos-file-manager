@@ -1,6 +1,78 @@
 # CHANGES
 
-## This session -- the complete specification (see `SPEC.md`)
+## This session -- CI fixes, the last three spec items, and languages
+
+**Fixed the CI failure from last time:** `gdk_pixbuf::Pixbuf::savev`'s third
+argument is `&[(&str, &str)]` -- one slice of key/value pairs, not two
+parallel slices. That was the only real bug; the CI log showed exactly
+these 2 errors and nothing else, meaning the rest of the previous session's
+~7,700 changed lines checked out.
+
+**The three items left open last time:**
+
+* **Undo / Redo** (`operations/undo.rs`, Ctrl+Z / Ctrl+Shift+Z) -- covers
+  rename, create (folder/file/link), trash, copy/move (so Duplicate and
+  drag-and-drop get it too), and batch rename. `undo()`/`redo()` are exact
+  mirrors of each other and both hand back the *new* inverse to push onto
+  the other stack -- usually the same action, but restoring-then-redoing a
+  trashed item gets a fresh `.trashinfo` each time, so `redo(Trashed)`
+  rebuilds real `TrashItem`s rather than replaying stale ones. Safety
+  rules: "New Folder"/"New File" only undo while the folder is still empty
+  or the file still zero bytes, so Undo can never eat something you added
+  after creating it; a rename/paste undo that would overwrite something
+  refuses rather than clobbering it. Permanent delete is never on this
+  list -- undoing it would break the promise its own confirmation makes.
+  Wiring this up meant `operations::paste_pending` now returns what it
+  actually wrote (`Vec<(source, destination)>`, not just a count) and the
+  job engine gained a `JobMessage::Transferred` event so a paste run
+  through the progress dialog reports the same thing.
+* **Read-only lock badges** -- a small badge on any icon/list-view row you
+  can't write to (`filesystem::access::can_write`, one syscall, only for
+  rows actually on screen). `ui/grid_view.rs`, `ui/list_view.rs`.
+* **"Browse Network..."** (`navigation/network.rs`) -- lists what GIO's
+  `network:///` discovers (SMB workgroups, DNS-SD/UPnP shares, whatever the
+  installed GVfs backends announce) in a popover off the sidebar; clicking
+  one mounts it if needed and navigates there. Complements "Connect to
+  Server...", which is still there for typing an address directly.
+
+**Languages** (`i18n/`): English, French, Spanish, Arabic, Twi. Every
+translatable string keys off its own English text (`tr("Cancel")`), so
+adding a language is one new catalog file, and a key with no entry in it
+just falls back to English rather than showing a raw key or breaking --
+Twi's catalog is deliberately partial (the ~25 most common strings) rather
+than guessed in full. Scope is every static piece of chrome: buttons, menu
+items, dialog titles and messages, tooltips, column headers, empty states,
+the keyboard-shortcuts list. Text built at runtime from data -- counts,
+file names, error messages -- stays English; `"{count} items"` needs
+per-language plural rules this doesn't implement, and inventing one felt
+like a good way to mistranslate quietly. Switch it in Settings (new
+"Language" row): dialogs and menus built after that pick it up immediately,
+the toolbar's own buttons need a restart to catch up, and the dropdown
+says so. None of the four translations have had a native speaker's review
+-- they're a solid starting point, not a finished localization.
+
+**Tests: 109 -> 136.** New: the i18n fallback/detection logic, every undo
+and redo path (including a batch-rename swap and a deliberately-stale trash
+item), the undo-stack's depth cap and its redo-clearing rule, `network:/// `
+discovery not panicking on a zero timeout.
+
+**If CI complains, look here first** (in addition to the earlier list --
+`Popover::downgrade`, `ListStore::splice`, the clipboard and volume-mount
+calls, all still unverified against a real compiler):
+1. `mime/thumbnail.rs` -- the `savev` fix itself; the tuple-pair shape is
+   confirmed against gdk-pixbuf 0.20's real signature, but nothing else in
+   that file has been rechecked.
+2. `navigation/network.rs` -- `gio::File::enumerate_children` /
+   `FileEnumerator::next_file` / `FileInfo::attribute_string`.
+3. `ui/progress.rs` -- `show_progress_dialog`'s callback now takes two
+   arguments (`Result<usize, String>, Vec<(PathBuf, PathBuf)>)`); every
+   caller was updated, but this is exactly the kind of signature change a
+   compiler catches and I can't.
+4. `operations/undo.rs` -- `TrashItem` doesn't derive `Debug`, which is why
+   `UndoableAction` only derives `Clone`; if anything ever needs to log an
+   action, that'll need revisiting.
+
+## Previous session -- the complete specification (see `SPEC.md`)
 
 Audit first: of the specification's ~90 items, about half were already
 there. What was missing or only half-true, and what now exists:

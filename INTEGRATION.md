@@ -118,3 +118,6 @@ Exit status 0 on success; otherwise 1 with a one-line reason on stderr. `delete`
 | `~/.cache/thumbnails/normal/` | Freedesktop thumbnail cache. Images and videos are rendered here at 128 px with `Thumb::URI` and `Thumb::MTime`, so other file managers reuse them; one older than its file is regenerated |
 | `~/.config/mitos/file-manager/servers.json` | Recently used network addresses (never with a password) |
 | `recently-used.xbel` (via `GtkRecentManager`) | Files opened from this app are added; read back for the sidebar's "Recent" section |
+
+### 14. Language
+The UI language is this app's own setting (`language` in `settings.json`, an `i18n::Lang` code such as `"fr"`) -- not part of the shared `home.conf`, so it isn't visible to `mitos-gui` or other MITOS components, and setting the desktop's language elsewhere doesn't change this app's. Left unset, it follows `$LANGUAGE` / `$LC_ALL` / `$LC_MESSAGES` / `$LANG` at startup (gettext's own priority order). Supported codes: `en`, `fr`, `es`, `ar`, `tw`.
