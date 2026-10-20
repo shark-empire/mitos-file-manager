@@ -68,7 +68,7 @@ Drop a folder containing `plugin.json` into `~/.config/mitos/file-manager/plugin
 }
 ```
 
-`applies_to` is `files`, `folders` or `both`. The command runs through `sh -c` with `{files}` replaced by the selected paths, **each single-quoted**, so names containing spaces or shell metacharacters arrive as one literal argument each. Actions are re-read every time the menu opens; no restart needed.
+`applies_to` is `files`, `folders` or `both`. The command runs through `sh -c` with `{files}` replaced by the selected paths, **each single-quoted**, so names containing spaces or shell metacharacters arrive as one literal argument each. Actions are re-read every time the menu opens; no restart needed. Hovering an entry shows the plugin's `description` followed by its `name`, `version` and `author`; the action's `id` becomes the button's widget name (`plugin-<id>`), so it can be targeted from CSS.
 
 ### 9. Command line
 `mitos-file-manager [PATH...]` opens each directory in its own tab. A file path opens the folder that contains it. With no arguments it opens the home directory.

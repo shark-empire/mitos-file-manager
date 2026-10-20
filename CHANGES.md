@@ -1,5 +1,95 @@
 # CHANGES
 
+## This session -- CI fixes for the language pass, and everything found unconnected
+
+**The CI failure (19 errors, every one from last session's language pass):**
+
+* 16 x `E0425` in `ui/properties.rs` -- the file called `tr()` but never
+  imported it. Added `use crate::i18n::tr;`.
+* 3 x `E0716` in `main.rs` -- `&i18n::tr("...")` written inside an `if`/`else`
+  branch. `tr()` returns an owned `String`, which is dropped at the end of the
+  branch while the borrow is still needed. The empty-folder / no-results text
+  and the "No network locations found" label now bind the `String` to a local
+  first.
+
+rustc doesn't borrow-check a function that failed name resolution, so
+everything in `properties.rs` that uses `tr()` had never really been checked
+before this run. It was re-read by hand, but the CI run after this one is the
+real test.
+
+**Flaky tests, fixed before they could bite.** The i18n tests change a
+process-wide setting (the current language) while `cargo test` runs tests on
+parallel threads, and `ui/preview.rs` has a test asserting English wording --
+so one could randomly fail the other depending on timing.
+`i18n::test_support::use_language()` now makes them take turns (and puts the
+language back even if an assertion panics); the preview test pins English.
+
+**Wired up -- code that existed but wasn't connected to anything:**
+
+* **Live config reload never worked.** `ConfigWatcher` was a local in
+  `build_ui`, so it was dropped the moment the window finished building --
+  which stops the watch. Edits to `~/.config/mitos/home.conf` never re-themed
+  anything. It's now owned by the loop that receives its updates, for as long
+  as the window is open (closed on window destroy). It also watches the
+  *folder* rather than the file, so a save done as write-temp-then-rename
+  doesn't leave it watching a dead inode and a first-run file is noticed, and
+  it only reports real changes (`SharedConfig` now derives `PartialEq`).
+* **List view couldn't scroll.** The icon grid sat in a `ScrolledWindow` but
+  the list's `ColumnView` was added to the stack bare, so any folder taller
+  than the window was cut off. It has its own `ScrolledWindow` now.
+* **Type-ahead** only ever matched the first letter, and its buffer
+  (`TYPEAHEAD_BUFFER`) was declared but never used. Now: typed letters build a
+  prefix that resets after a one-second pause; the same letter repeated steps
+  through the names starting with it; the match is selected *and scrolled into
+  view* in whichever view is showing.
+* **Arabic never laid out right-to-left** (`Lang::is_rtl` had no callers).
+  `ui::accessibility::apply_language_direction()` sets GTK's default direction
+  at startup and again when the language changes in Settings.
+* **Undo of "Create Link"** deleted whatever sat at the link's path, even a
+  real file that had replaced it. The guard written for this
+  (`remove_if_still_a_symlink`) was never called; it is now.
+* **Undo / Redo buttons** in the toolbar. Until now the only way in was
+  Ctrl+Z, with nothing on screen to say whether anything could be undone.
+  They grey out when there's nothing to undo/redo, and the tooltip says what
+  the next press would do (that's what `UndoableAction::forward_description`
+  was written for, and it had no callers).
+* **Plugin details**: a plugin's `description`, `name`, `version` and `author`
+  were parsed and never read; they're the tooltip on its menu entries now, and
+  each action's `id` becomes the button's widget name (`plugin-<id>`).
+* **Tooltips weren't translated.** `make_button_accessible` /
+  `make_entry_accessible` never called `tr()`, even though the catalogs already
+  held a translation for every one of those tooltips. They do now. Also
+  translated: the Properties window title and General tab, the search box
+  placeholder; added catalog entries for "Create", "Default apps" and the
+  network-address hint (fr/es/ar).
+* Removed `ui/file_view.rs`: an old list-box view that no `mod` declared, so it
+  was never compiled or used.
+
+**Tests: +8.** One for link-undo never deleting a replacement file, three for
+plugin manifests (tooltip text, parsing a `plugin.json`), four for type-ahead
+(prefix building and the pause reset, case-insensitive prefix search, wrapping,
+repeat-vs-narrow).
+
+**If CI complains, look here first** -- all of these are API calls written
+without a compiler to check them:
+1. `main.rs::typeahead_select` -- `GridView::scroll_to` and
+   `ColumnView::scroll_to` (GTK 4.12 API, behind the `v4_12` feature this
+   crate already enables).
+2. `ui/accessibility.rs::apply_language_direction` --
+   `gtk::Widget::set_default_direction`.
+3. `main.rs`, "Poll for config changes" -- `async_channel::Receiver::close`
+   and `connect_destroy`.
+4. `config/watcher.rs` -- the `notify` closure now mutates captured state
+   (`FnMut`), which `notify::recommended_watcher` accepts.
+5. `main.rs::update_undo_controls` and the new toolbar buttons.
+
+Also worth knowing: the dead-code pass this time was a text search over the
+source (names that appear only where they're defined), not the compiler -- so
+once CI is green, the first real `warning:` list is worth reading. And
+`~/.config/mitos/...` at the top of the repo is a literal folder named `~`
+(it looks like a sample plugin and `home.conf` that were created with `~/`
+in the file path); nothing reads it.
+
 ## This session -- CI fixes, the last three spec items, and languages
 
 **Fixed the CI failure from last time:** `gdk_pixbuf::Pixbuf::savev`'s third

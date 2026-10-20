@@ -216,4 +216,8 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Grid", "Grille"),
     ("MITOS Files Settings", "Paramètres de MITOS Files"),
     ("Some parts of the window need a restart to fully switch language.", "Certaines parties de la fenêtre nécessitent un redémarrage pour changer complètement de langue."),
+    ("Search...", "Rechercher..."),
+    ("Create", "Créer"),
+    ("Default apps", "Applications par défaut"),
+    ("Enter a network address:\nsmb://server/share · sftp://user@host/path · ftp://host/path", "Saisissez une adresse réseau :\nsmb://server/share · sftp://user@host/path · ftp://host/path"),
 ];

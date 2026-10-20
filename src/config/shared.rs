@@ -10,7 +10,7 @@ use std::path::PathBuf;
 /// - Future MITOS apps
 ///
 /// Location: ~/.config/mitos/home.conf
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SharedConfig {
     pub theme_mode: String,
     pub accent_color: String,

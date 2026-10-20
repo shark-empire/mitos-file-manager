@@ -11,13 +11,31 @@ pub fn setup_widget_accessibility(window: &gtk::ApplicationWindow) {
 /// hover, and the description assistive tech falls back on for controls
 /// that only have a short label.
 pub fn make_button_accessible(button: &impl IsA<gtk::Widget>, description: &str) {
-    button.set_tooltip_text(Some(description));
+    button.set_tooltip_text(Some(&tr(description)));
 }
 
 /// Same idea for text inputs (the location bar, the search box): say what
 /// belongs in them.
 pub fn make_entry_accessible(entry: &impl IsA<gtk::Widget>, label: &str) {
-    entry.set_tooltip_text(Some(label));
+    entry.set_tooltip_text(Some(&tr(label)));
+}
+
+/// Lay widgets out right to left while the UI language is one that reads
+/// that way (Arabic), and left to right otherwise.
+///
+/// GTK picks its default direction from the *process locale*, which needn't
+/// match the language chosen in Settings -- an English-locale session set to
+/// Arabic would otherwise stay left to right. Setting the default also
+/// re-flows windows that are already open, so switching language in Settings
+/// takes effect on the spot.
+pub fn apply_language_direction() {
+    let direction = if crate::i18n::current().is_rtl() {
+        gtk::TextDirection::Rtl
+    } else {
+        gtk::TextDirection::Ltr
+    };
+
+    gtk::Widget::set_default_direction(direction);
 }
 
 /// Key combo, shown as typed (never translated -- it's the physical keys

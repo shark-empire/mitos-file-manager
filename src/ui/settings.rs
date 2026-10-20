@@ -242,6 +242,7 @@ pub fn show(parent: &ApplicationWindow, apply_changes: Rc<dyn Fn()>) {
             // chrome keeps its current language until the app restarts
             // (see the note under the dropdown).
             crate::i18n::set_current(language);
+            crate::ui::accessibility::apply_language_direction();
 
             settings::apply_and_save(
                 hidden_switch.is_active(),

@@ -150,8 +150,11 @@ pub fn undo(action: &UndoableAction) -> Result<UndoResult, String> {
         }
 
         UndoableAction::Linked { links } => {
+            // Only ever removes something that is still a symlink -- if a
+            // real file or folder has since taken the link's place, it's
+            // the user's now and Undo leaves it alone.
             let (removed, failures) =
-                delete_all(links.iter().map(|(link_path, _)| link_path.clone()));
+                remove_links(links.iter().map(|(link_path, _)| link_path.clone()));
 
             if removed == 0 && !links.is_empty() {
                 return Err(too_stale_to_undo("remove the link", &failures));
@@ -483,6 +486,26 @@ fn delete_all(destinations: impl Iterator<Item = PathBuf>) -> (usize, Vec<String
     (done, failures)
 }
 
+/// Undo for "Create Link": remove each link Undo is responsible for, but
+/// only while it is still a symlink (`remove_if_still_a_symlink`) -- unlike
+/// `delete_all`, this can never delete a file or folder that replaced it.
+fn remove_links(links: impl Iterator<Item = PathBuf>) -> (usize, Vec<String>) {
+    let mut done = 0;
+    let mut failures = Vec::new();
+
+    for link in links {
+        if protection::ensure_modifiable(&[link.clone()]).is_ok()
+            && remove_if_still_a_symlink(&link).is_ok()
+        {
+            done += 1;
+        } else {
+            failures.push(display_name(&link));
+        }
+    }
+
+    (done, failures)
+}
+
 fn move_all(pairs: impl Iterator<Item = (PathBuf, PathBuf)>) -> (usize, Vec<String>) {
     let mut done = 0;
     let mut failures = Vec::new();
@@ -682,6 +705,26 @@ mod tests {
 
         redo(undone.inverse.as_ref().unwrap()).unwrap();
         assert_eq!(fs::read_link(&link_path).unwrap(), target);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn link_undo_never_deletes_a_real_file_that_replaced_the_link() {
+        let dir = scratch_dir("undo-link-replaced");
+        let target = dir.join("target.txt");
+        fs::write(&target, "x").unwrap();
+
+        // The link was created, then swapped for a real file by hand.
+        let link_path = dir.join("Link to target.txt");
+        fs::write(&link_path, "precious").unwrap();
+
+        let action = UndoableAction::Linked {
+            links: vec![(link_path.clone(), target.clone())],
+        };
+
+        assert!(undo(&action).is_err());
+        assert_eq!(fs::read_to_string(&link_path).unwrap(), "precious");
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -158,6 +158,15 @@ fn get_active_widgets(
     Some((state, grid, store, selection))
 }
 
+/// The list (column) view of the tab that's showing -- `get_active_widgets`
+/// only carries the icon grid.
+fn get_active_list_view(notebook: &Notebook) -> Option<gtk::ColumnView> {
+    let page_num = notebook.current_page()?;
+    let widget = notebook.nth_page(Some(page_num))?;
+
+    get_obj_data(&widget, "list-view")
+}
+
 fn normalize(path: PathBuf) -> PathBuf {
     fs::canonicalize(&path).unwrap_or(path)
 }
@@ -504,12 +513,59 @@ fn set_status(job_ui: &JobUi, text: &str) {
     }
 }
 
+/// Keep the toolbar's Undo and Redo buttons in step with the two stacks:
+/// greyed out when there is nothing to undo or redo, otherwise a tooltip that
+/// says what pressing them would do.
+fn update_undo_controls(location_entry: &Entry, ctx: &Rc<RefCell<AppContext>>) {
+    // `try_borrow`: nothing here is worth a panic if a caller happens to be
+    // holding the context at the moment.
+    let (next_undo, next_redo) = {
+        let Ok(ctx) = ctx.try_borrow() else {
+            return;
+        };
+
+        (
+            ctx.undo_stack
+                .last()
+                .map(|action| action.forward_description()),
+            ctx.redo_stack
+                .last()
+                .map(|action| action.forward_description()),
+        )
+    };
+
+    for (key, label, empty_label, shortcut, next) in [
+        ("undo-btn", "Undo", "Nothing to undo", "Ctrl+Z", next_undo),
+        (
+            "redo-btn",
+            "Redo",
+            "Nothing to redo",
+            "Ctrl+Shift+Z",
+            next_redo,
+        ),
+    ] {
+        let Some(button) = get_obj_data::<_, Button>(location_entry, key) else {
+            continue;
+        };
+
+        button.set_sensitive(next.is_some());
+
+        let tooltip = match next {
+            Some(description) => format!("{}: {} ({})", i18n::tr(label), description, shortcut),
+            None => format!("{} ({})", i18n::tr(empty_label), shortcut),
+        };
+
+        button.set_tooltip_text(Some(&tooltip));
+    }
+}
+
 /// Reverse the most recent undoable action, if there is one. The actual
 /// filesystem work (`operations::undo::undo`) runs on a background thread
 /// -- undoing a large move can take a moment -- and the outcome is shown
 /// in the status bar, or as an error dialog if nothing could be undone.
 fn perform_undo(job_ui: JobUi) {
     let popped = job_ui.ctx.borrow_mut().undo_stack.pop();
+    update_undo_controls(&job_ui.location_entry, &job_ui.ctx);
 
     let Some(action) = popped else {
         set_status(&job_ui, &i18n::tr("Nothing to undo"));
@@ -541,12 +597,15 @@ fn perform_undo(job_ui: JobUi) {
             }
             Err(err) => dialogs::show_error(&job_ui.window, &err),
         }
+
+        update_undo_controls(&job_ui.location_entry, &job_ui.ctx);
     });
 }
 
 /// The mirror of `perform_undo`: replays the most recently undone action.
 fn perform_redo(job_ui: JobUi) {
     let popped = job_ui.ctx.borrow_mut().redo_stack.pop();
+    update_undo_controls(&job_ui.location_entry, &job_ui.ctx);
 
     let Some(action) = popped else {
         set_status(&job_ui, &i18n::tr("Nothing to redo"));
@@ -576,6 +635,8 @@ fn perform_redo(job_ui: JobUi) {
             }
             Err(err) => dialogs::show_error(&job_ui.window, &err),
         }
+
+        update_undo_controls(&job_ui.location_entry, &job_ui.ctx);
     });
 }
 
@@ -1398,6 +1459,10 @@ fn refresh_tab(
         }
     }
 
+    // Anything that changed what's on disk lands here afterwards, so this is
+    // where Undo / Redo notice their stacks changed.
+    update_undo_controls(location_entry, ctx);
+
     // The folder's contents are read on a worker thread; the view is filled
     // in when they arrive (`finish_directory_load`).
     start_directory_load(tab_state, store, ctx, location_entry, sidebar_list);
@@ -1573,15 +1638,16 @@ fn finish_directory_load(
 
     grid_view::render_progressive(store, items, still_current);
 
-    show_items_page(
-        store,
-        item_count,
-        if query.is_empty() {
-            &i18n::tr("This folder is empty")
-        } else {
-            &i18n::tr("No results found")
-        },
-    );
+    // `tr()` hands back an owned `String`; binding it here keeps it alive for
+    // the call (a `&tr(..)` written inside an `if`/`else` branch is dropped at
+    // the end of that branch, before `show_items_page` can use it).
+    let empty_text = if query.is_empty() {
+        i18n::tr("This folder is empty")
+    } else {
+        i18n::tr("No results found")
+    };
+
+    show_items_page(store, item_count, &empty_text);
 
     // Permission awareness: don't offer to create or paste into a folder
     // that can't be written to.
@@ -1657,7 +1723,17 @@ fn add_tab(
     view_stack.add_named(&empty_label, Some("empty"));
 
     let list_view = ui::list_view::create_list_view(&selection);
-    view_stack.add_named(&list_view, Some("list"));
+
+    // The list needs a scrolled window of its own, like the icon grid above:
+    // a bare `ColumnView` just grows to fit every row and never scrolls, so
+    // a folder taller than the window would be cut off.
+    let list_scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .build();
+    list_scrolled.set_child(Some(&list_view));
+    list_scrolled.set_vexpand(true);
+    view_stack.add_named(&list_scrolled, Some("list"));
 
     let page_widget = GtkBox::new(Orientation::Vertical, 0);
     page_widget.append(&view_stack);
@@ -1666,6 +1742,7 @@ fn add_tab(
 
     set_obj_data(&page_widget, "tab-state", tab_state.clone());
     set_obj_data(&page_widget, "grid-view", grid.clone());
+    set_obj_data(&page_widget, "list-view", list_view.clone());
     set_obj_data(&page_widget, "list-store", store.clone());
     set_obj_data(&page_widget, "selection-model", selection.clone());
 
@@ -2069,6 +2146,10 @@ fn build_ui(
     portal_rx: Option<std::sync::mpsc::Receiver<portal::service::PortalRequest>>,
     desktop_rx: Option<std::sync::mpsc::Receiver<desktop::service::DesktopRequest>>,
 ) {
+    // Before any widget exists, so the first window is laid out the right way
+    // round for the chosen language (Arabic reads right to left).
+    ui::accessibility::apply_language_direction();
+
     let window = ui::window::create_window(app, "MITOS Files");
 
     ui::accessibility::setup_widget_accessibility(&window);
@@ -2088,9 +2169,11 @@ fn build_ui(
     // read fresh below regardless, so a new window still reflects
     // whatever the current live state is.
 
-    // Start config watcher
+    // Start config watcher. It must outlive this function -- dropping a
+    // watcher stops it -- so it's moved into the receiving loop below, which
+    // keeps it for as long as the window is open.
     let (config_tx, config_rx) = async_channel::unbounded();
-    let _config_watcher = config::watcher::ConfigWatcher::start(config_tx);
+    let config_watcher = config::watcher::ConfigWatcher::start(config_tx);
 
     let theme_mode = config::settings::theme_mode();
     ui::theme::apply_theme(&WidgetExt::display(&window), theme_mode);
@@ -2115,7 +2198,7 @@ fn build_ui(
     location_entry.set_hexpand(true);
 
     let search_entry = SearchEntry::new();
-    search_entry.set_placeholder_text(Some("Search..."));
+    search_entry.set_placeholder_text(Some(&i18n::tr("Search...")));
     search_entry.set_width_request(200);
 
     let search_recursive_toggle = CheckButton::with_label(&i18n::tr("Recursive"));
@@ -2160,6 +2243,12 @@ fn build_ui(
     list_toggle.set_active(VIEW_MODE_LIST.load(Ordering::Relaxed));
     let paste_btn = Button::with_label(&i18n::tr("Paste"));
     let trash_btn = Button::with_label(&i18n::tr("Trash"));
+    // Greyed out until there's something to undo or redo; their tooltips
+    // say what the next press would do (`update_undo_controls`).
+    let undo_btn = Button::with_label(&i18n::tr("Undo"));
+    let redo_btn = Button::with_label(&i18n::tr("Redo"));
+    undo_btn.set_sensitive(false);
+    redo_btn.set_sensitive(false);
     let open_trash_btn = Button::with_label(&i18n::tr("Open Trash"));
     let settings_btn = Button::with_label(&i18n::tr("Settings"));
     let preview_toggle = CheckButton::with_label(&i18n::tr("Preview"));
@@ -2174,6 +2263,8 @@ fn build_ui(
     toolbar2.append(&move_btn);
     toolbar2.append(&paste_btn);
     toolbar2.append(&trash_btn);
+    toolbar2.append(&undo_btn);
+    toolbar2.append(&redo_btn);
     toolbar2.append(&open_trash_btn);
     toolbar2.append(&settings_btn);
     toolbar2.append(&preview_toggle);
@@ -2300,6 +2391,8 @@ fn build_ui(
     set_obj_data(&location_entry, "new-folder-btn", new_folder_btn.clone());
     set_obj_data(&location_entry, "new-file-btn", new_file_btn.clone());
     set_obj_data(&location_entry, "paste-btn", paste_btn.clone());
+    set_obj_data(&location_entry, "undo-btn", undo_btn.clone());
+    set_obj_data(&location_entry, "redo-btn", redo_btn.clone());
     set_obj_data(&location_entry, "split-pane", split_pane.clone());
     set_obj_data(&location_entry, "split-toggle", split_toggle.clone());
     set_obj_data(&location_entry, "back-btn", back_btn.clone());
@@ -2433,7 +2526,19 @@ fn build_ui(
         let sidebar_list = sidebar_list.clone();
         let watcher_manager = watcher_manager.clone();
 
+        // Closing the channel when the window goes away ends the loop below,
+        // which drops the watcher and everything else the loop was holding.
+        {
+            let config_rx = config_rx.clone();
+
+            window.connect_destroy(move |_| {
+                config_rx.close();
+            });
+        }
+
         glib::MainContext::default().spawn_local(async move {
+            let _config_watcher = config_watcher;
+
             while let Ok(shared_config) = config_rx.recv().await {
                 // Apply theme if changed
                 let theme_mode = crate::ui::theme::ThemeMode::from_str(&shared_config.theme_mode);
@@ -2525,7 +2630,8 @@ fn build_ui(
                 if let Some(ch) = key.to_unicode() {
                     if ch.is_alphanumeric() || matches!(ch, '.' | '-' | '_') {
                         if let Some((_, grid, store, selection)) = &active {
-                            typeahead_select(ch, grid, store, selection);
+                            let list_view = get_active_list_view(&notebook);
+                            typeahead_select(ch, grid, list_view.as_ref(), store, selection);
                             return glib::Propagation::Stop;
                         }
                     }
@@ -3891,6 +3997,42 @@ fn build_ui(
         });
     }
 
+    // Undo / Redo buttons: the same two actions as Ctrl+Z / Ctrl+Shift+Z, for
+    // anyone without a keyboard to hand.
+    {
+        for (button, is_redo) in [(undo_btn.clone(), false), (redo_btn.clone(), true)] {
+            let window = window.clone();
+            let notebook = notebook.clone();
+            let ctx = ctx.clone();
+            let location_entry = location_entry.clone();
+            let search_entry = search_entry.clone();
+            let hidden_toggle = hidden_toggle.clone();
+            let sidebar_list = sidebar_list.clone();
+            let watcher_manager = watcher_manager.clone();
+
+            button.connect_clicked(move |_| {
+                let job_ui = JobUi::new(
+                    &window,
+                    &notebook,
+                    &ctx,
+                    &location_entry,
+                    &search_entry,
+                    &hidden_toggle,
+                    &sidebar_list,
+                    &watcher_manager,
+                );
+
+                if is_redo {
+                    perform_redo(job_ui);
+                } else {
+                    perform_undo(job_ui);
+                }
+            });
+        }
+
+        update_undo_controls(&location_entry, &ctx);
+    }
+
     {
         let window_error = window.clone();
         let notebook = notebook.clone();
@@ -4439,6 +4581,11 @@ fn show_context_menu<W: IsA<gtk::Widget>>(
 
             let btn = Button::with_label(&action.label);
             btn.set_has_frame(false);
+
+            // What the plugin says about itself on hover, and its action id
+            // as the widget name (`plugin-<id>`) so it can be styled or found.
+            btn.set_tooltip_text(Some(&manifest.tooltip()));
+            btn.set_widget_name(&format!("plugin-{}", action.id));
 
             let command = action.command.clone();
             let paths: Vec<PathBuf> = items.iter().map(|item| item.get_path()).collect();
@@ -5169,23 +5316,108 @@ fn show_split_context_menu(
     popover.popup();
 }
 
+/// A pause longer than this between keystrokes starts a fresh type-ahead
+/// search.
+const TYPEAHEAD_RESET: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// Fold `ch` into the type-ahead text, forgetting what was typed before if
+/// the previous keystroke was longer ago than `TYPEAHEAD_RESET`.
+fn typeahead_extend(state: &mut (String, std::time::Instant), ch: char, now: std::time::Instant) {
+    if now.saturating_duration_since(state.1) > TYPEAHEAD_RESET {
+        state.0.clear();
+    }
+
+    state.0.extend(ch.to_lowercase());
+    state.1 = now;
+}
+
+/// What to look for, and which row to start looking from, given the text
+/// typed so far and the first selected row.
+///
+/// The same letter typed again and again (d, d, d) steps through the names
+/// beginning with it, one per press -- so it starts from the row *after* the
+/// current one. Anything else narrows a prefix ("d", "do", "doc"), starting
+/// from the current row itself so it isn't lost while it still matches.
+fn typeahead_goal(typed: &str, current: Option<u32>) -> (String, u32) {
+    match typed.chars().next() {
+        Some(first) if typed.chars().all(|c| c == first) => (
+            first.to_string(),
+            current.map_or(0, |index| index.saturating_add(1)),
+        ),
+        _ => (typed.to_string(), current.unwrap_or(0)),
+    }
+}
+
+/// The first of `count` rows, looking from `start` and wrapping round the
+/// end, whose name begins with `needle` (lower-case). Names are fetched one
+/// at a time, so a folder of a hundred thousand files isn't copied out just
+/// to find one.
+fn typeahead_find(
+    count: u32,
+    name_at: impl Fn(u32) -> Option<String>,
+    needle: &str,
+    start: u32,
+) -> Option<u32> {
+    if count == 0 || needle.is_empty() {
+        return None;
+    }
+
+    (0..count)
+        .map(|offset| ((u64::from(start) + u64::from(offset)) % u64::from(count)) as u32)
+        .find(|&index| {
+            name_at(index).map_or(false, |name| name.to_lowercase().starts_with(needle))
+        })
+}
+
+/// Type-ahead: typing letters jumps to the first file whose name starts with
+/// what's been typed (see `typeahead_goal` for how repeats and pauses work),
+/// selects it, and scrolls it into view in whichever view is showing.
 fn typeahead_select(
     ch: char,
-    _grid: &gtk::GridView,
+    grid: &gtk::GridView,
+    list_view: Option<&gtk::ColumnView>,
     store: &gio::ListStore,
     selection: &gtk::MultiSelection,
 ) {
-    let q = ch.to_lowercase().to_string();
-    let n = store.n_items();
-    for i in 0..n {
-        if let Some(obj) = store.item(i) {
-            if let Some(item_obj) = obj.downcast_ref::<ItemObject>() {
-                if item_obj.name().to_lowercase().starts_with(&q) {
-                    selection.select_item(i, true);
-                    return;
-                }
-            }
+    let typed = TYPEAHEAD_BUFFER.with(|buffer| {
+        let mut state = buffer.borrow_mut();
+        typeahead_extend(&mut state, ch, std::time::Instant::now());
+        state.0.clone()
+    });
+
+    let selected = selection.selection();
+    let current = if selected.is_empty() {
+        None
+    } else {
+        Some(selected.minimum())
+    };
+
+    let (needle, start) = typeahead_goal(&typed, current);
+
+    let found = typeahead_find(
+        store.n_items(),
+        |index| {
+            store
+                .item(index)
+                .and_then(|object| object.downcast::<ItemObject>().ok())
+                .map(|item| item.name())
+        },
+        &needle,
+        start,
+    );
+
+    let Some(index) = found else {
+        return;
+    };
+
+    selection.select_item(index, true);
+
+    if VIEW_MODE_LIST.load(Ordering::Relaxed) {
+        if let Some(list_view) = list_view {
+            list_view.scroll_to(index, None, gtk::ListScrollFlags::FOCUS, None);
         }
+    } else {
+        grid.scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
     }
 }
 
@@ -5337,11 +5569,12 @@ fn show_network_browser(anchor: &gtk::Widget, job_ui: JobUi) {
             return;
         };
 
-        status_label.set_label(if locations.is_empty() {
-            &i18n::tr("No network locations found")
+        let status_text = if locations.is_empty() {
+            i18n::tr("No network locations found")
         } else {
-            ""
-        });
+            String::new()
+        };
+        status_label.set_label(&status_text);
         status_label.set_visible(locations.is_empty());
 
         for location in locations {
@@ -5681,5 +5914,61 @@ mod tests {
         }
 
         assert!(!is_trash_files_dir(Path::new("/tmp")));
+    }
+
+    // ---- type-ahead ----------------------------------------------------
+
+    fn names<'a>(list: &'a [&'a str]) -> impl Fn(u32) -> Option<String> + 'a {
+        move |index| list.get(index as usize).map(|name| name.to_string())
+    }
+
+    #[test]
+    fn typeahead_text_builds_up_and_starts_over_after_a_pause() {
+        let start = std::time::Instant::now();
+        let mut state = (String::new(), start);
+
+        typeahead_extend(&mut state, 'D', start);
+        typeahead_extend(&mut state, 'o', start + std::time::Duration::from_millis(300));
+        assert_eq!(state.0, "do");
+
+        let after_a_pause = start
+            + std::time::Duration::from_millis(300)
+            + TYPEAHEAD_RESET
+            + std::time::Duration::from_millis(1);
+        typeahead_extend(&mut state, 'p', after_a_pause);
+        assert_eq!(state.0, "p");
+    }
+
+    #[test]
+    fn typeahead_finds_the_first_name_with_the_prefix_ignoring_case() {
+        let list = ["Apps", "Documents", "Downloads", "music"];
+
+        assert_eq!(typeahead_find(4, names(&list), "do", 0), Some(1));
+        assert_eq!(typeahead_find(4, names(&list), "dow", 0), Some(2));
+        assert_eq!(typeahead_find(4, names(&list), "mu", 0), Some(3));
+        assert_eq!(typeahead_find(4, names(&list), "zzz", 0), None);
+        assert_eq!(typeahead_find(0, names(&[]), "a", 0), None);
+    }
+
+    #[test]
+    fn typeahead_wraps_round_from_where_it_started() {
+        let list = ["alpha", "beta", "apple"];
+
+        // Starting after "alpha" finds "apple" before wrapping back round.
+        assert_eq!(typeahead_find(3, names(&list), "a", 1), Some(2));
+        // Starting past the end wraps to the top.
+        assert_eq!(typeahead_find(3, names(&list), "a", 3), Some(0));
+    }
+
+    #[test]
+    fn typeahead_steps_on_a_repeated_letter_and_narrows_otherwise() {
+        // One letter, or the same letter again: the next name starting with it.
+        assert_eq!(typeahead_goal("d", Some(4)), ("d".to_string(), 5));
+        assert_eq!(typeahead_goal("dd", Some(4)), ("d".to_string(), 5));
+        assert_eq!(typeahead_goal("d", None), ("d".to_string(), 0));
+
+        // A longer prefix narrows from the current row, which may still match.
+        assert_eq!(typeahead_goal("do", Some(2)), ("do".to_string(), 2));
+        assert_eq!(typeahead_goal("do", None), ("do".to_string(), 0));
     }
 }

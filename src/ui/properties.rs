@@ -1,6 +1,7 @@
 use crate::filesystem::access;
 use crate::filesystem::metadata;
 use crate::filesystem::traversal::{self, FolderSize};
+use crate::i18n::tr;
 use crate::ui::file_list;
 use crate::ui::item_object::ItemObject;
 use gtk::glib;
@@ -11,8 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub fn show(parent: &gtk::ApplicationWindow, item: &ItemObject) {
+    let window_title = tr("Properties");
+
     let window = gtk::Window::builder()
-        .title("Properties")
+        .title(window_title.as_str())
         .transient_for(parent)
         .modal(true)
         .default_width(460)
@@ -27,7 +30,7 @@ pub fn show(parent: &gtk::ApplicationWindow, item: &ItemObject) {
 
     notebook.append_page(
         &build_general_tab(item, &cancel),
-        Some(&gtk::Label::new(Some("General"))),
+        Some(&gtk::Label::new(Some(&tr("General")))),
     );
 
     notebook.append_page(

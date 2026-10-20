@@ -354,6 +354,10 @@ mod tests {
 
     #[test]
     fn a_folder_is_described_by_its_item_count_and_names() {
+        // Asserts English wording, so pin the language (and keep the
+        // language-switching tests in `i18n` from changing it mid-test).
+        let _english = crate::i18n::test_support::use_language(crate::i18n::Lang::En);
+
         let dir = scratch_dir("preview-folder");
         fs::write(dir.join("b.txt"), "b").unwrap();
         fs::write(dir.join("A.txt"), "a").unwrap();

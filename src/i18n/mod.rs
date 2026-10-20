@@ -198,19 +198,60 @@ pub fn tr(key: &str) -> String {
     }
 }
 
+/// Test-only helper for anything that reads or changes the global language.
+///
+/// The current language is process-wide, and `cargo test` runs tests on
+/// parallel threads -- so a test that switches to French would otherwise
+/// leak "Dossier vide" into an unrelated test asserting "Empty folder".
+/// Holding a `LanguageGuard` serializes those tests against each other, and
+/// restores the previous language on drop even if an assertion panics.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
+    use super::{current, set_current, Lang};
+    use std::sync::{Mutex, MutexGuard};
 
-    // Tests that read/set the global current-language must not run
-    // concurrently with each other (they'd race), so each restores it
-    // when done rather than relying on test order.
-    fn with_lang<R>(lang: Lang, body: impl FnOnce() -> R) -> R {
+    static LANGUAGE_LOCK: Mutex<()> = Mutex::new(());
+
+    pub struct LanguageGuard {
+        previous: Lang,
+        // Declared after `previous` and never read: it exists to be dropped
+        // (releasing the lock) *after* `Drop::drop` has restored the language.
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for LanguageGuard {
+        fn drop(&mut self) {
+            set_current(self.previous);
+        }
+    }
+
+    /// Lock out other language-sensitive tests and switch to `lang` until
+    /// the returned guard is dropped.
+    pub fn use_language(lang: Lang) -> LanguageGuard {
+        // A test that panicked while holding the lock poisons it; the data
+        // is `()`, so there's nothing to be inconsistent about.
+        let lock = LANGUAGE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         let previous = current();
         set_current(lang);
-        let result = body();
-        set_current(previous);
-        result
+
+        LanguageGuard {
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::use_language;
+    use super::*;
+
+    fn with_lang<R>(lang: Lang, body: impl FnOnce() -> R) -> R {
+        let _guard = use_language(lang);
+        body()
     }
 
     #[test]
