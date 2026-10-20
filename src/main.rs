@@ -5364,9 +5364,7 @@ fn typeahead_find(
 
     (0..count)
         .map(|offset| ((u64::from(start) + u64::from(offset)) % u64::from(count)) as u32)
-        .find(|&index| {
-            name_at(index).map_or(false, |name| name.to_lowercase().starts_with(needle))
-        })
+        .find(|&index| name_at(index).map_or(false, |name| name.to_lowercase().starts_with(needle)))
 }
 
 /// Type-ahead: typing letters jumps to the first file whose name starts with
@@ -5928,7 +5926,11 @@ mod tests {
         let mut state = (String::new(), start);
 
         typeahead_extend(&mut state, 'D', start);
-        typeahead_extend(&mut state, 'o', start + std::time::Duration::from_millis(300));
+        typeahead_extend(
+            &mut state,
+            'o',
+            start + std::time::Duration::from_millis(300),
+        );
         assert_eq!(state.0, "do");
 
         let after_a_pause = start
