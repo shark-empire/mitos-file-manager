@@ -62,10 +62,24 @@ language back even if an assertion panics); the preview test pins English.
   translated: the Properties window title and General tab, the search box
   placeholder; added catalog entries for "Create", "Default apps" and the
   network-address hint (fr/es/ar).
+* **Launching a second time lost the folder you asked for.** The app is
+  single-instance, but was created with no flags, so a second launch
+  (`mitos-file-manager ~/Pictures`, which is what "open folder" in another app
+  runs) could only say "activate" to the running copy -- with no idea which
+  folder. Worse, the setup that the comments call "once per process" lived in
+  `activate`, so every second launch re-read settings, reset the view mode and
+  started all three D-Bus services again. Now: `HANDLES_OPEN`, one-time setup
+  in `startup`, and `open` adds the folders as tabs to the window that's
+  already open (and brings it forward); a plain launch opens a new window.
+* **No launcher entry.** Added `data/org.mitos.file-manager.desktop`
+  (`MimeType=inode/directory`) so the system can offer, and default to, this app
+  for folders. See `INTEGRATION.md` section 9 for the two install steps.
+* Tab-menu, path-bar (Edit/Done) and preview-panel labels were still English
+  only; now translated (+7 catalog entries in fr/es/ar).
 * Removed `ui/file_view.rs`: an old list-box view that no `mod` declared, so it
   was never compiled or used.
 
-**Tests: +8.** One for link-undo never deleting a replacement file, three for
+**Tests: +9.** One for launch arguments becoming folders, one for link-undo never deleting a replacement file, three for
 plugin manifests (tooltip text, parsing a `plugin.json`), four for type-ahead
 (prefix building and the pause reset, case-insensitive prefix search, wrapping,
 repeat-vs-narrow).

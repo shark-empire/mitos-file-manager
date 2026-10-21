@@ -220,4 +220,11 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Create", "Créer"),
     ("Default apps", "Applications par défaut"),
     ("Enter a network address:\nsmb://server/share · sftp://user@host/path · ftp://host/path", "Saisissez une adresse réseau :\nsmb://server/share · sftp://user@host/path · ftp://host/path"),
+    ("No selection", "Aucune sélection"),
+    ("Path", "Chemin"),
+    ("Edit", "Modifier"),
+    ("Done", "Terminé"),
+    ("Close Tab", "Fermer l'onglet"),
+    ("Close Other Tabs", "Fermer les autres onglets"),
+    ("Close All Tabs", "Fermer tous les onglets"),
 ];

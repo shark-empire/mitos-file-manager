@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Button, Entry, Orientation, Stack};
 use std::path::Path;
@@ -18,7 +19,7 @@ pub fn build() -> (GtkBox, Stack, GtkBox, Entry) {
     stack.add_named(&entry, Some("entry"));
     stack.set_visible_child_name("crumbs");
 
-    let edit_btn = Button::with_label("Edit");
+    let edit_btn = Button::with_label(&tr("Edit"));
     edit_btn.set_has_frame(false);
 
     {
@@ -28,11 +29,11 @@ pub fn build() -> (GtkBox, Stack, GtkBox, Entry) {
         edit_btn.connect_clicked(move |btn| {
             if stack.visible_child_name().as_deref() == Some("entry") {
                 stack.set_visible_child_name("crumbs");
-                btn.set_label("Edit");
+                btn.set_label(&tr("Edit"));
             } else {
                 stack.set_visible_child_name("entry");
                 entry.grab_focus();
-                btn.set_label("Done");
+                btn.set_label(&tr("Done"));
             }
         });
     }

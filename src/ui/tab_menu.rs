@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Button, Notebook, Orientation, Popover};
 
@@ -19,9 +20,9 @@ pub fn show_tab_context_menu(
     menu_box.set_margin_start(4);
     menu_box.set_margin_end(4);
 
-    let close_btn = Button::with_label("Close Tab");
-    let close_others_btn = Button::with_label("Close Other Tabs");
-    let close_all_btn = Button::with_label("Close All Tabs");
+    let close_btn = Button::with_label(&tr("Close Tab"));
+    let close_others_btn = Button::with_label(&tr("Close Other Tabs"));
+    let close_all_btn = Button::with_label(&tr("Close All Tabs"));
 
     close_btn.set_has_frame(false);
     close_others_btn.set_has_frame(false);

@@ -73,6 +73,8 @@ Drop a folder containing `plugin.json` into `~/.config/mitos/file-manager/plugin
 ### 9. Command line
 `mitos-file-manager [PATH...]` opens each directory in its own tab. A file path opens the folder that contains it. With no arguments it opens the home directory.
 
+The app is single-instance (`org.mitos.file-manager`). If a copy is already running, the folders open as new tabs in *its* window, which comes forward -- that is what makes it work as the system's folder handler (`xdg-open ~/Pictures`, "Show in Folder" in other apps). A launch with no arguments opens a new window instead. To register it as that handler, install `data/org.mitos.file-manager.desktop` into `/usr/share/applications/` and run `xdg-mime default org.mitos.file-manager.desktop inode/directory`.
+
 ### 10. `org.mitos.Trash` (session bus)
 The trash can as a service, so the desktop shell can show a full/empty icon, a settings panel can offer "Empty Trash", and other apps can list or restore what was deleted. Object path `/org/mitos/Trash`, name `org.mitos.Trash`. It reads the user's trash plus the per-drive trash folders of anything mounted under `/media`, `/run/media` or `/mnt`.
 

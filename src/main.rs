@@ -114,31 +114,136 @@ fn main() {
 
     let app = Application::builder()
         .application_id("org.mitos.file-manager")
+        // `HANDLES_OPEN`: `mitos-file-manager /some/folder` -- which is what
+        // opening a folder from another app, or "Show in Folder", ends up
+        // running -- is handed to the copy that's already running as an
+        // `open` signal. Without it, a second launch could only say
+        // "activate", with no way to say *which* folder, and the request
+        // was lost.
+        .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
 
-    app.connect_activate(move |app| {
-        // Everything here runs once per process, before the first
-        // window: settings are loaded from disk (a second `build_ui`
-        // call, e.g. from "New Window", reads the already-loaded values
-        // instead of re-reading the file, so it reflects whatever's
+    // The channels the D-Bus services use to ask the first window for things
+    // (a file-chooser request, a wallpaper change). Made once, in `startup`,
+    // and taken by whichever window is built first.
+    let services: Rc<RefCell<Option<ServiceReceivers>>> = Rc::new(RefCell::new(None));
+
+    {
+        let services = services.clone();
+
+        // `startup` runs once per process, in the copy that stays running --
+        // a later launch is forwarded to that copy as `activate` or `open`
+        // and never runs this. (It used to live in `activate`, which a
+        // second launch *does* run again: re-reading settings and starting
+        // every D-Bus service a second time.) Settings are read from disk
+        // here so "New Window" and later launches reflect whatever is
         // currently live rather than resetting anything the user just
-        // changed), and both D-Bus services claim a well-known bus name
-        // each -- starting either twice would have the second attempt
-        // fail to claim an already-owned name.
-        config::settings::load();
-        VIEW_MODE_LIST.store(
-            config::settings::default_view() == "list",
-            Ordering::Relaxed,
-        );
+        // changed, and each D-Bus service claims its well-known name --
+        // claiming one twice would fail the second time.
+        app.connect_startup(move |_| {
+            config::settings::load();
+            VIEW_MODE_LIST.store(
+                config::settings::default_view() == "list",
+                Ordering::Relaxed,
+            );
 
-        let portal_rx = portal::service::start();
-        let desktop_rx = desktop::service::start();
-        desktop::trash_service::start();
+            let portal_rx = portal::service::start();
+            let desktop_rx = desktop::service::start();
+            desktop::trash_service::start();
 
-        build_ui(app, &args, Some(portal_rx), Some(desktop_rx));
-    });
+            *services.borrow_mut() = Some((portal_rx, desktop_rx));
+        });
+    }
+
+    {
+        let services = services.clone();
+
+        // Launched with no folder named (the app launcher, a bare
+        // `mitos-file-manager`): a new window on the home folder.
+        app.connect_activate(move |app| show_folders(app, &[], &services));
+    }
+
+    {
+        let services = services.clone();
+
+        // Launched with folders or files named: they open as tabs in the
+        // window that's already open, or in a new one if there isn't one yet.
+        app.connect_open(move |app, files, _hint| {
+            let paths: Vec<String> = files
+                .iter()
+                .filter_map(|file| file.path())
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+
+            show_folders(app, &paths, &services);
+        });
+    }
 
     let _ = app.run();
+}
+
+/// What `startup` hands to the first window (see `main`).
+type ServiceReceivers = (
+    std::sync::mpsc::Receiver<portal::service::PortalRequest>,
+    std::sync::mpsc::Receiver<desktop::service::DesktopRequest>,
+);
+
+/// A window's "open these folders as tabs" hook, kept on the window itself
+/// under the object-data key `"open-folders"` (see `show_folders`).
+type OpenFolders = Rc<dyn Fn(Vec<PathBuf>)>;
+
+/// The folders to open for command-line style arguments: a folder opens as
+/// itself, a file as the folder that holds it, and anything that doesn't
+/// exist is skipped. May be empty.
+fn folders_for_args(args: &[String]) -> Vec<PathBuf> {
+    let mut folders = Vec::new();
+
+    for arg in args {
+        let path = normalize(PathBuf::from(arg));
+
+        if path.is_dir() {
+            folders.push(path);
+        } else if path.is_file() {
+            if let Some(parent) = path.parent() {
+                folders.push(parent.to_path_buf());
+            }
+        }
+    }
+
+    folders
+}
+
+/// Open `paths` (see `folders_for_args`): as new tabs in a window that's
+/// already open, or -- the first time, or when nothing usable was named --
+/// in a new window.
+fn show_folders(
+    app: &Application,
+    paths: &[String],
+    services: &Rc<RefCell<Option<ServiceReceivers>>>,
+) {
+    let folders = folders_for_args(paths);
+
+    if !folders.is_empty() {
+        let open_window = app
+            .active_window()
+            .or_else(|| app.windows().into_iter().next());
+
+        if let Some(open_folders) =
+            open_window.and_then(|window| get_obj_data::<_, OpenFolders>(&window, "open-folders"))
+        {
+            open_folders(folders);
+            return;
+        }
+    }
+
+    // Only the first window takes the services' channels; later ones get
+    // `None` (two windows polling one channel would just split its messages).
+    let (portal_rx, desktop_rx) = match services.borrow_mut().take() {
+        Some((portal_rx, desktop_rx)) => (Some(portal_rx), Some(desktop_rx)),
+        None => (None, None),
+    };
+
+    build_ui(app, paths, portal_rx, desktop_rx);
 }
 
 fn get_active_widgets(
@@ -2405,19 +2510,7 @@ fn build_ui(
 
     // Open directories passed on the command line.
     // Files open their parent directory.
-    let mut initial_dirs: Vec<PathBuf> = Vec::new();
-
-    for arg in initial_args {
-        let path = normalize(PathBuf::from(arg));
-
-        if path.is_dir() {
-            initial_dirs.push(path);
-        } else if path.is_file() {
-            if let Some(parent) = path.parent() {
-                initial_dirs.push(parent.to_path_buf());
-            }
-        }
-    }
+    let mut initial_dirs = folders_for_args(initial_args);
 
     if initial_dirs.is_empty() {
         initial_dirs.push(locations::home_dir());
@@ -2435,6 +2528,45 @@ fn build_ui(
             &sidebar_list,
             &watcher_manager,
         );
+    }
+
+    // Lets a later launch name folders for *this* window (`show_folders`):
+    // they open as tabs here -- each new tab is selected as it's added --
+    // and the window comes forward. It holds the window only weakly: a
+    // strong reference stored on the window itself would keep it alive.
+    {
+        let weak_window = window.downgrade();
+        let notebook = notebook.clone();
+        let ctx = ctx.clone();
+        let location_entry = location_entry.clone();
+        let search_entry = search_entry.clone();
+        let hidden_toggle = hidden_toggle.clone();
+        let sidebar_list = sidebar_list.clone();
+        let watcher_manager = watcher_manager.clone();
+
+        let open_folders: OpenFolders = Rc::new(move |folders: Vec<PathBuf>| {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+
+            for folder in folders {
+                add_tab(
+                    &notebook,
+                    &ctx,
+                    folder,
+                    &window,
+                    &location_entry,
+                    &search_entry,
+                    &hidden_toggle,
+                    &sidebar_list,
+                    &watcher_manager,
+                );
+            }
+
+            window.present();
+        });
+
+        set_obj_data(&window, "open-folders", open_folders);
     }
 
     // Split pane: right-click menu -- open the selection, or copy / move it
@@ -5364,7 +5496,9 @@ fn typeahead_find(
 
     (0..count)
         .map(|offset| ((u64::from(start) + u64::from(offset)) % u64::from(count)) as u32)
-        .find(|&index| name_at(index).map_or(false, |name| name.to_lowercase().starts_with(needle)))
+        .find(|&index| {
+            name_at(index).map_or(false, |name| name.to_lowercase().starts_with(needle))
+        })
 }
 
 /// Type-ahead: typing letters jumps to the first file whose name starts with
@@ -5926,11 +6060,7 @@ mod tests {
         let mut state = (String::new(), start);
 
         typeahead_extend(&mut state, 'D', start);
-        typeahead_extend(
-            &mut state,
-            'o',
-            start + std::time::Duration::from_millis(300),
-        );
+        typeahead_extend(&mut state, 'o', start + std::time::Duration::from_millis(300));
         assert_eq!(state.0, "do");
 
         let after_a_pause = start
@@ -5972,5 +6102,31 @@ mod tests {
         // A longer prefix narrows from the current row, which may still match.
         assert_eq!(typeahead_goal("do", Some(2)), ("do".to_string(), 2));
         assert_eq!(typeahead_goal("do", None), ("do".to_string(), 0));
+    }
+    // ---- launching ----------------------------------------------------
+
+    #[test]
+    fn launch_arguments_become_the_folders_to_open() {
+        let dir = crate::util::test_support::scratch_dir("launch-args");
+        let folder = dir.join("Pictures");
+        std::fs::create_dir(&folder).unwrap();
+        let file = folder.join("cat.png");
+        std::fs::write(&file, b"x").unwrap();
+
+        let args = vec![
+            folder.to_string_lossy().into_owned(),
+            file.to_string_lossy().into_owned(),
+            dir.join("missing").to_string_lossy().into_owned(),
+        ];
+
+        // A folder opens as itself, a file as the folder holding it, and
+        // something that doesn't exist is skipped.
+        assert_eq!(
+            folders_for_args(&args),
+            vec![normalize(folder.clone()), normalize(folder.clone())]
+        );
+        assert!(folders_for_args(&[]).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

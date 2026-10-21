@@ -63,6 +63,7 @@ tests, the GTK layer is hand-verified.
 | Mount / unmount / eject | Done | Sidebar |
 | Network shares | Done | See Network locations |
 | Trash service | Done | `org.mitos.Trash` on the session bus (`INTEGRATION.md`) |
+| Launched from other apps | Done | `mitos-file-manager /folder` -- what "open folder" / "Show in Folder" runs -- opens as a tab in the window that's already running (single-instance, `main.rs: show_folders`). `data/org.mitos.file-manager.desktop` is the launcher entry that registers it for `inode/directory` |
 
 ## Security
 
@@ -82,7 +83,7 @@ Added on top of the list above, not asked for by name in it:
 | Item | Status | Where / notes |
 |---|---|---|
 | Multiple languages | Done | `i18n/`: English, French, Spanish, Arabic, Twi. Static UI chrome -- buttons, menus, dialogs, tooltips, column headers, empty states -- is translated (`i18n::tr`); text built from runtime data (counts, file names, error messages) stays English, since correct pluralization needs per-language grammar rules this doesn't implement. Switched in Settings; new dialogs and menus pick it up immediately, the toolbar needs a restart. Twi's catalog is partial by design -- an untranslated key falls back to English rather than showing a placeholder. None of the four have had a native-speaker review yet |
-| Undo / Redo | Done | `operations/undo.rs`, Ctrl+Z / Ctrl+Shift+Z. Covers rename, create (folder/file/link), trash, copy/move (including Duplicate and drag-and-drop), batch rename. Deliberately excludes permanent delete (by design -- that confirmation says "can't be undone" and means it), Compress, and Extract. "New Folder"/"New File" only undo while still empty, so it can never eat content you added after creating one |
+| Undo / Redo | Done | `operations/undo.rs`; toolbar buttons (greyed out when empty, tooltip says what's next) and Ctrl+Z / Ctrl+Shift+Z. Covers rename, create (folder/file/link), trash, copy/move (including Duplicate and drag-and-drop), batch rename. Deliberately excludes permanent delete (by design -- that confirmation says "can't be undone" and means it), Compress, and Extract. "New Folder"/"New File" only undo while still empty, so it can never eat content you added after creating one |
 | Read-only lock badges | Done | A small badge on any icon/list-view row you can't write to (`filesystem::access::can_write`) -- `ui/grid_view.rs`, `ui/list_view.rs` |
 
 ## Performance

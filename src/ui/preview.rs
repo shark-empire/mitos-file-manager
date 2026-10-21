@@ -140,7 +140,7 @@ pub fn update(container: &GtkBox, item: Option<&crate::ui::item_object::ItemObje
     };
 
     let Some(item) = item else {
-        widgets.name_label.set_label("No selection");
+        widgets.name_label.set_label(&tr("No selection"));
         widgets.type_label.set_label("");
         widgets.size_label.set_label("");
         widgets.modified_label.set_label("");
@@ -155,19 +155,21 @@ pub fn update(container: &GtkBox, item: Option<&crate::ui::item_object::ItemObje
     let mime = item.mime_type();
 
     widgets.name_label.set_label(&item.name());
-    widgets.type_label.set_label(&format!("Type: {}", mime));
+    widgets
+        .type_label
+        .set_label(&format!("{}: {}", tr("Type"), mime));
     widgets
         .size_label
-        .set_label(&format!("Size: {}", item.size_str()));
+        .set_label(&format!("{}: {}", tr("Size"), item.size_str()));
     widgets
         .modified_label
-        .set_label(&format!("Modified: {}", item.modified_str()));
+        .set_label(&format!("{}: {}", tr("Modified"), item.modified_str()));
     widgets
         .path_label
-        .set_label(&format!("Path: {}", path.display()));
+        .set_label(&format!("{}: {}", tr("Path"), path.display()));
     widgets
         .permissions_label
-        .set_label(&format!("Permissions: {}", item.permissions()));
+        .set_label(&format!("{}: {}", tr("Permissions"), item.permissions()));
 
     // Which page of the preview stack to show, and what goes on it.
     let text = if item.is_dir() {
