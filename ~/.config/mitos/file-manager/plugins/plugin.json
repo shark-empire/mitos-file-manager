@@ -1,0 +1,15 @@
+{
+    "name": "Open Terminal",
+    "version": "1.0.0",
+    "description": "Opens a terminal in the selected folder",
+    "author": "MITOS",
+    "actions": [
+        {
+            "id": "open_terminal",
+            "label": "Open Terminal Here",
+            "command": "cd {files} && x-terminal-emulator",
+            "applies_to": "folders"
+        }
+    ]
+}
+
